@@ -1,0 +1,225 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Dispatcher Insights</title>
+<script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js"></script>
+<style>
+  :root{
+    --bg:#0b0f1a; --card:#141b30; --card2:#1a2340; --line:#233156; --ink:#eef2fb;
+    --dim:#9aa7c8; --faint:#5f6d92; --indigo:#7c8cff; --cyan:#35d0d6;
+    --ok:#35d6a5; --warn:#ffcb5c; --crit:#ff6f8b; --mono:"Consolas",monospace;
+  }
+  *{box-sizing:border-box;margin:0;padding:0}
+  body{font-family:"Segoe UI",system-ui,sans-serif;color:var(--ink);font-size:14px;
+    background:radial-gradient(900px 500px at 88% -8%,rgba(124,140,255,.14),transparent 60%),var(--bg);min-height:100vh}
+  header{display:flex;align-items:center;gap:14px;padding:15px 30px;border-bottom:1px solid var(--line);
+    position:sticky;top:0;background:rgba(11,15,26,.85);backdrop-filter:blur(10px);z-index:5}
+  header .glyph{width:34px;height:34px;border-radius:9px;display:grid;place-items:center;font-weight:900;color:#0b0f1a;
+    background:conic-gradient(from 200deg,var(--indigo),var(--cyan),var(--indigo))}
+  header h1{font-size:16px;font-weight:700}
+  header h1 small{display:block;font-size:10.5px;color:var(--faint);font-weight:500;letter-spacing:.5px}
+  header .grow{flex:1}
+  header .pill{font-size:11.5px;color:var(--dim);border:1px solid var(--line);border-radius:999px;padding:6px 13px}
+  header .btn{font-size:12px;color:#0b0f1a;background:var(--cyan);border:none;border-radius:8px;padding:7px 14px;cursor:pointer;font-weight:700}
+  header .btn:hover{filter:brightness(1.1)}
+  .page{max-width:1180px;margin:0 auto;padding:24px 30px 70px}
+  .kpis{display:grid;grid-template-columns:repeat(4,1fr);gap:12px;margin-bottom:22px}
+  .kpi{background:var(--card);border:1px solid var(--line);border-radius:14px;padding:16px 18px}
+  .kpi .v{font-family:var(--mono);font-size:28px;font-weight:800}
+  .kpi .v small{font-size:13px;color:var(--faint)}
+  .kpi .l{font-size:11px;color:var(--faint);text-transform:uppercase;letter-spacing:.4px;margin-top:4px}
+  .kpi.warn .v{color:var(--warn)} .kpi.crit .v{color:var(--crit)} .kpi.ok .v{color:var(--ok)}
+  .grid{display:grid;grid-template-columns:1fr 1fr;gap:16px}
+  .card{background:var(--card);border:1px solid var(--line);border-radius:16px;padding:18px 20px}
+  .card h3{font-size:13px;font-weight:700;margin-bottom:14px;display:flex;justify-content:space-between}
+  .card h3 .sub{font-size:11px;color:var(--faint);font-weight:500}
+  .card.wide{grid-column:1 / -1}
+  canvas{max-height:300px}
+  .tablewrap{max-height:420px;overflow:auto}
+  table{width:100%;border-collapse:collapse;font-size:12px}
+  th,td{text-align:left;padding:8px 10px;border-bottom:1px solid var(--line);white-space:nowrap}
+  th{color:var(--faint);text-transform:uppercase;font-size:10px;letter-spacing:.4px;position:sticky;top:0;background:var(--card)}
+  td.mono{font-family:var(--mono);color:var(--dim)}
+  .tag{font-size:10px;font-weight:700;padding:2px 8px;border-radius:6px}
+  .tag.ok{background:rgba(53,214,165,.14);color:var(--ok)}
+  .tag.stuck{background:rgba(255,111,139,.14);color:var(--crit)}
+  .filter{font-size:12px;color:var(--dim);background:var(--card2);border:1px solid var(--line);border-radius:8px;padding:6px 10px}
+  .loading{text-align:center;color:var(--faint);padding:60px}
+  .thru-filters{display:flex;gap:5px;margin-left:auto}
+  .fbtn{font-size:11px;padding:3px 10px;border-radius:6px;border:1px solid var(--line);
+    background:transparent;color:var(--dim);cursor:pointer;font-weight:600;transition:background .15s}
+  .fbtn:hover{background:var(--card2);color:var(--ink)}
+  .fbtn.active{background:var(--indigo);color:#fff;border-color:var(--indigo)}
+  @media(max-width:920px){.kpis{grid-template-columns:repeat(2,1fr)}.grid{grid-template-columns:1fr}}
+</style>
+</head>
+<body>
+<header>
+  <div class="glyph">D</div>
+  <h1>Dispatcher Insights</h1>
+  <div class="grow"></div>
+  <div class="pill" id="files">—</div>
+  <div class="pill" id="gen">loading…</div>
+  <button class="btn" onclick="reload()">↻ Refresh</button>
+</header>
+
+<main class="page"><div id="root"><div class="loading">Parsing dispatcher logs…</div></div></main>
+
+<script>
+const $ = (s,el=document)=>el.querySelector(s);
+const esc = s => String(s??"").replace(/[&<>]/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;"}[c]));
+let charts = [];
+
+Chart.defaults.color = "#9aa7c8";
+Chart.defaults.borderColor = "#233156";
+Chart.defaults.font.family = "Segoe UI, system-ui, sans-serif";
+
+function reload(){ $("#root").innerHTML='<div class="loading">Re-parsing logs…</div>'; load(); }
+
+function render(d){
+  charts.forEach(c=>c.destroy()); charts = [];
+  $("#gen").textContent = "generated " + (d.generated_at||"");
+  $("#files").textContent = (d.files_read||[]).length + " log file(s)";
+
+  if(!d.has_data){
+    $("#root").innerHTML = '<div class="loading">No parseable dispatcher tasks found in Logs\\.</div>';
+    return;
+  }
+  const k = d.kpis;
+  const stuckCls = k.stuck>0 ? "crit":"ok";
+  const qCls = k.avg_queue_min>=30 ? "crit" : k.avg_queue_min>=10 ? "warn":"ok";
+  const tCls = k.avg_total_min>=30 ? "crit" : k.avg_total_min>=10 ? "warn":"ok";
+
+  const kpis = `<div class="kpis">
+    <div class="kpi"><div class="v">${k.total_tasks}</div><div class="l">Total tasks</div></div>
+    <div class="kpi ok"><div class="v">${k.completed}</div><div class="l">Completed</div></div>
+    <div class="kpi ${stuckCls}"><div class="v">${k.stuck}</div><div class="l">Stuck (${k.stuck_pct}%)</div></div>
+    <div class="kpi ${qCls}"><div class="v">${k.avg_queue_min}<small> min</small></div><div class="l">Avg queue time</div></div>
+    <div class="kpi ${tCls}"><div class="v">${k.avg_total_min}<small> min</small></div><div class="l">Avg total time</div></div>
+    <div class="kpi"><div class="v">${k.avg_proc_min}<small> min</small></div><div class="l">Avg processing</div></div>
+    <div class="kpi warn"><div class="v">${k.max_queue_min}<small> min</small></div><div class="l">Max queue time</div></div>
+    <div class="kpi"><div class="v">${(d.job_breakdown||[]).length}</div><div class="l">Job types</div></div>
+  </div>`;
+
+  const chartCards = `<div class="grid">
+    <div class="card"><h3>Task status distribution</h3><canvas id="c_status"></canvas></div>
+    <div class="card"><h3>Queue-time distribution</h3><canvas id="c_queue"></canvas></div>
+    <div class="card wide"><h3>Tasks &amp; avg total time by job type</h3><canvas id="c_jobs"></canvas></div>
+    <div class="card"><h3>Tasks by group</h3><canvas id="c_group"></canvas></div>
+    <div class="card"><h3>Top users</h3><canvas id="c_user"></canvas></div>
+    <div class="card wide"><h3>Completions over time <span class="sub">per minute</span>
+      <span class="thru-filters">
+        <button class="fbtn" data-days="1"   onclick="setThruRange(this)">1D</button>
+        <button class="fbtn" data-days="7"   onclick="setThruRange(this)">1W</button>
+        <button class="fbtn" data-days="30"  onclick="setThruRange(this)">1M</button>
+        <button class="fbtn" data-days="90"  onclick="setThruRange(this)">3M</button>
+        <button class="fbtn active" data-days="0" onclick="setThruRange(this)">All</button>
+      </span></h3><canvas id="c_thru"></canvas></div>
+  </div>`;
+
+  const tableCard = `<div class="card wide" style="margin-top:16px">
+    <h3>Task detail <span class="sub"><input class="filter" id="flt" placeholder="filter by id / job / user…" oninput="filterTable()"></span></h3>
+    <div class="tablewrap"><table id="tbl"><thead><tr>
+      <th>Task ID</th><th>Job</th><th>User</th><th>Group</th><th>Status</th>
+      <th>Queue (m)</th><th>Proc (m)</th><th>Total (m)</th><th>Initial</th><th>End</th>
+    </tr></thead><tbody>${taskRows(d.tasks)}</tbody></table></div>
+  </div>`;
+
+  $("#root").innerHTML = kpis + chartCards + tableCard;
+  window._tasks = d.tasks;
+  draw(d);
+}
+
+function taskRows(tasks){
+  return (tasks||[]).map(t=>`<tr>
+    <td class="mono">${esc(t.task_id)}</td><td>${esc(t.job)}</td><td>${esc(t.user)}</td>
+    <td>${esc(t.group)}</td>
+    <td><span class="tag ${t.completed?'ok':'stuck'}">${esc(t.status)}</span></td>
+    <td class="mono">${t.queue_min??''}</td><td class="mono">${t.proc_min??''}</td>
+    <td class="mono">${t.total_min??''}</td>
+    <td class="mono">${esc(t.initial)}</td><td class="mono">${esc(t.end_time)}</td>
+  </tr>`).join("");
+}
+function filterTable(){
+  const q = $("#flt").value.toLowerCase();
+  const rows = (window._tasks||[]).filter(t=>
+    (t.task_id+t.job+t.user+t.group+t.status).toLowerCase().includes(q));
+  $("#tbl tbody").innerHTML = taskRows(rows);
+}
+
+function draw(d){
+  const A="#7c8cff", C="#35d0d6", W="#ffcb5c", K="#ff6f8b", G="#8be36b", P="#b58bff";
+  const palette=[A,C,W,K,G,P,"#5f6d92","#35d6a5","#ff9f6b","#6bb6ff"];
+  const bare={plugins:{legend:{display:false}},responsive:true,
+    scales:{y:{beginAtZero:true,grid:{color:"#1a2340"}},x:{grid:{display:false}}}};
+  // horizontal bars: value axis is X, category axis is Y
+  const bareH={plugins:{legend:{display:false}},responsive:true,indexAxis:"y",
+    scales:{x:{beginAtZero:true,grid:{color:"#1a2340"}},y:{grid:{display:false}}}};
+  const mk=(id,cfg)=>charts.push(new Chart($("#"+id),cfg));
+
+  const sd=d.status_distribution||[];
+  mk("c_status",{type:"doughnut",data:{labels:sd.map(s=>s.status),
+    datasets:[{data:sd.map(s=>s.count),backgroundColor:palette}]},
+    options:{plugins:{legend:{position:"right"}}}});
+
+  const qd=d.queue_distribution||[];
+  mk("c_queue",{type:"bar",data:{labels:qd.map(q=>q.range+" min"),
+    datasets:[{data:qd.map(q=>q.count),backgroundColor:qd.map(q=>q.range===">60"?K:q.range==="30-60"?W:A)}]},
+    options:bare});
+
+  const jb=d.job_breakdown||[];
+  mk("c_jobs",{data:{labels:jb.map(j=>j.job),datasets:[
+      {type:"bar",label:"Task count",data:jb.map(j=>j.count),backgroundColor:A,yAxisID:"y"},
+      {type:"line",label:"Avg total (min)",data:jb.map(j=>j.avg_total),borderColor:C,backgroundColor:C,yAxisID:"y1",tension:.3}]},
+    options:{responsive:true,plugins:{legend:{position:"top"}},
+      scales:{y:{beginAtZero:true,position:"left",grid:{color:"#1a2340"}},
+              y1:{beginAtZero:true,position:"right",grid:{display:false}},x:{grid:{display:false}}}}});
+
+  const gd=d.group_distribution||[];
+  mk("c_group",{type:"bar",data:{labels:gd.map(g=>g.group),
+    datasets:[{data:gd.map(g=>g.count),backgroundColor:P}]},
+    options:bareH});
+
+  const ud=d.user_distribution||[];
+  mk("c_user",{type:"bar",data:{labels:ud.map(u=>u.user),
+    datasets:[{data:ud.map(u=>u.count),backgroundColor:G}]},
+    options:bareH});
+
+  window._thruAll = d.throughput||[];
+  drawThru(window._thruAll);
+}
+
+function drawThru(slice){
+  const C="#35d0d6";
+  const bare={plugins:{legend:{display:false}},responsive:true,
+    scales:{y:{beginAtZero:true,grid:{color:"#1a2340"}},x:{grid:{display:false}}}};
+  // destroy existing throughput chart if any
+  const idx = charts.findIndex(c=>c.canvas.id==="c_thru");
+  if(idx!==-1){charts[idx].destroy();charts.splice(idx,1);}
+  charts.push(new Chart($("#c_thru"),{type:"line",data:{labels:slice.map(t=>t.t),
+    datasets:[{data:slice.map(t=>t.count),borderColor:C,backgroundColor:"rgba(53,208,214,.15)",fill:true,tension:.3,pointRadius:slice.length<120?3:0}]},
+    options:bare}));
+}
+
+function setThruRange(btn){
+  document.querySelectorAll(".fbtn").forEach(b=>b.classList.remove("active"));
+  btn.classList.add("active");
+  const days = parseInt(btn.dataset.days,10);
+  const all = window._thruAll||[];
+  if(!days||!all.length){drawThru(all);return;}
+  const cutoff = new Date(Date.now() - days*24*60*60*1000);
+  const fmt = d=>`${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,"0")}-${String(d.getDate()).padStart(2,"0")}`;
+  const cutStr = fmt(cutoff);
+  drawThru(all.filter(t=>t.t>=cutStr));
+}
+
+function load(){
+  fetch("/api/stats").then(r=>r.json()).then(render)
+    .catch(e=>$("#root").innerHTML=`<div class="loading">Failed to load: ${esc(e)}</div>`);
+}
+load();
+</script>
+</body>
+</html>
