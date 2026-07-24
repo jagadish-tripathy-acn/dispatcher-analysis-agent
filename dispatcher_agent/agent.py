@@ -168,19 +168,25 @@ class DispatcherLogAgent:
     def run(self):
         rows = self._task_timings()
         total_tasks = len(rows)
-        completed = [r for r in rows if r["completed"]]
+        # "ended" = reached any lifecycle end state (COMPLETE/TERMINAL/DELETE/DUPLICATE);
+        # used for timing stats since queue/proc/total times are meaningful regardless of outcome.
+        ended = [r for r in rows if r["completed"]]
         stuck = [r for r in rows if not r["completed"]]
+        # "Completed" KPI = successful completions only; "Terminal jobs" = failed/aborted only.
+        # These two are mutually exclusive (unlike DELETE/DUPLICATE, which aren't broken out).
+        succeeded = [r for r in ended if r["current_status"] == "COMPLETE"]
+        terminal = [r for r in ended if r["current_status"] == "TERMINAL"]
 
         # KPIs
-        queue_vals = [r["queue_min"] for r in completed]
-        proc_vals = [r["proc_min"] for r in completed]
-        total_vals = [r["total_min"] for r in completed]
+        queue_vals = [r["queue_min"] for r in ended]
+        proc_vals = [r["proc_min"] for r in ended]
+        total_vals = [r["total_min"] for r in ended]
 
         # Status distribution (by each task's current status)
         status_counts = Counter(r["current_status"] or "UNKNOWN" for r in rows)
 
         # Queue-time buckets
-        bucket_counts = Counter(_bucket(r["queue_min"]) for r in completed if r["queue_min"] is not None)
+        bucket_counts = Counter(_bucket(r["queue_min"]) for r in ended if r["queue_min"] is not None)
         queue_distribution = [{"range": b, "count": bucket_counts.get(b, 0)} for b in QUEUE_BUCKETS]
 
         # By job type
@@ -204,7 +210,7 @@ class DispatcherLogAgent:
 
         # Throughput: completions per minute (end_time)
         per_min = Counter()
-        for r in completed:
+        for r in ended:
             if r["end_time"]:
                 per_min[r["end_time"].strftime("%Y-%m-%d %H:%M")] += 1
         throughput = [{"t": t, "count": per_min[t]} for t in sorted(per_min)]
@@ -227,9 +233,11 @@ class DispatcherLogAgent:
             "has_data": total_tasks > 0,
             "kpis": {
                 "total_tasks": total_tasks,
-                "completed": len(completed),
+                "completed": len(succeeded),
                 "stuck": len(stuck),
                 "stuck_pct": round(100 * len(stuck) / total_tasks, 1) if total_tasks else 0.0,
+                "terminal_jobs": len(terminal),
+                "terminal_pct": round(100 * len(terminal) / total_tasks, 1) if total_tasks else 0.0,
                 "avg_queue_min": _avg(queue_vals),
                 "max_queue_min": max([q for q in queue_vals if q is not None], default=0),
                 "avg_proc_min": _avg(proc_vals),

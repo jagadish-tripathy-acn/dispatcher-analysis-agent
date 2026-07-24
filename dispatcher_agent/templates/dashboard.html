@@ -22,8 +22,9 @@
   header h1 small{display:block;font-size:10.5px;color:var(--faint);font-weight:500;letter-spacing:.5px}
   header .grow{flex:1}
   header .pill{font-size:11.5px;color:var(--dim);border:1px solid var(--line);border-radius:999px;padding:6px 13px}
-  header .btn{font-size:12px;color:#0b0f1a;background:var(--cyan);border:none;border-radius:8px;padding:7px 14px;cursor:pointer;font-weight:700}
-  header .btn:hover{filter:brightness(1.1)}
+  .btn{font-size:12px;color:#0b0f1a;background:var(--cyan);border:none;border-radius:8px;padding:7px 14px;cursor:pointer;font-weight:700;flex-shrink:0}
+  .btn:hover{filter:brightness(1.1)}
+  .btn:disabled{opacity:.55;cursor:not-allowed;filter:none}
   .page{max-width:1180px;margin:0 auto;padding:24px 30px 70px}
   .kpis{display:grid;grid-template-columns:repeat(4,1fr);gap:12px;margin-bottom:22px}
   .kpi{background:var(--card);border:1px solid var(--line);border-radius:14px;padding:16px 18px}
@@ -45,6 +46,28 @@
   .tag{font-size:10px;font-weight:700;padding:2px 8px;border-radius:6px}
   .tag.ok{background:rgba(53,214,165,.14);color:var(--ok)}
   .tag.stuck{background:rgba(255,111,139,.14);color:var(--crit)}
+  .tag.sev-low,.tag.pri-low{background:rgba(53,214,165,.14);color:var(--ok)}
+  .tag.sev-medium,.tag.pri-medium{background:rgba(255,203,92,.16);color:var(--warn)}
+  .tag.sev-high,.tag.pri-high{background:rgba(255,111,139,.14);color:var(--crit)}
+  .tag.sev-critical,.tag.pri-critical{background:rgba(255,111,139,.28);color:var(--crit)}
+  .ai-card .ai-head{display:flex;align-items:center;gap:12px;margin-bottom:4px;flex-wrap:wrap}
+  .ai-card .ai-head h3{display:flex;align-items:baseline;gap:8px;justify-content:flex-start;
+    margin-bottom:0;flex:1 1 auto;min-width:0}
+  .ai-card .ai-head h3 .sub{white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+  .ai-card .ai-badges{display:flex;gap:8px;margin-left:auto;flex-shrink:0}
+  .ai-card .badge{font-family:var(--mono);font-size:11px;color:var(--dim);border:1px solid var(--line);
+    border-radius:999px;padding:4px 11px;white-space:nowrap}
+  .ai-summary{font-size:14px;line-height:1.6;color:var(--ink);margin:10px 0 16px}
+  .ai-section{margin-top:16px}
+  .ai-section h4{font-size:11px;color:var(--faint);text-transform:uppercase;letter-spacing:.4px;margin-bottom:8px}
+  .ai-analysis{font-size:12.5px;line-height:1.7;color:var(--dim);white-space:pre-wrap}
+  .ai-list{list-style:none;display:flex;flex-direction:column;gap:10px}
+  .ai-item{background:var(--card2);border:1px solid var(--line);border-radius:10px;padding:10px 14px}
+  .ai-item .ai-item-head{display:flex;align-items:center;gap:8px;margin-bottom:4px}
+  .ai-item .ai-item-title{font-size:12.5px;font-weight:700}
+  .ai-item .ai-item-desc{font-size:12px;color:var(--dim);line-height:1.5}
+  .ai-empty{font-size:12px;color:var(--faint)}
+  .ai-error{font-size:12.5px;color:var(--crit)}
   .filter{font-size:12px;color:var(--dim);background:var(--card2);border:1px solid var(--line);border-radius:8px;padding:6px 10px}
   .loading{text-align:center;color:var(--faint);padding:60px}
   .thru-filters{display:flex;gap:5px;margin-left:auto}
@@ -89,6 +112,7 @@ function render(d){
   }
   const k = d.kpis;
   const stuckCls = k.stuck>0 ? "crit":"ok";
+  const termCls = k.terminal_jobs>0 ? "crit":"ok";
   const qCls = k.avg_queue_min>=30 ? "crit" : k.avg_queue_min>=10 ? "warn":"ok";
   const tCls = k.avg_total_min>=30 ? "crit" : k.avg_total_min>=10 ? "warn":"ok";
 
@@ -100,7 +124,17 @@ function render(d){
     <div class="kpi ${tCls}"><div class="v">${k.avg_total_min}<small> min</small></div><div class="l">Avg total time</div></div>
     <div class="kpi"><div class="v">${k.avg_proc_min}<small> min</small></div><div class="l">Avg processing</div></div>
     <div class="kpi warn"><div class="v">${k.max_queue_min}<small> min</small></div><div class="l">Max queue time</div></div>
-    <div class="kpi"><div class="v">${(d.job_breakdown||[]).length}</div><div class="l">Job types</div></div>
+    <!--<div class="kpi"><div class="v">${(d.job_breakdown||[]).length}</div><div class="l">Job types</div></div>-->
+    <div class="kpi ${termCls}"><div class="v">${k.terminal_jobs}</div><div class="l">Terminal jobs (${k.terminal_pct}%)</div></div>
+  </div>`;
+
+  const aiCard = `<div class="card wide ai-card" style="margin-bottom:16px">
+    <div class="ai-head">
+      <h3>AI Insights <span class="sub">Bedrock-generated analysis</span></h3>
+      <div class="ai-badges" id="ai-badges"></div>
+      <button class="btn" id="ai-btn" onclick="loadAnalysis()">✦ Generate</button>
+    </div>
+    <div id="ai-body"><div class="ai-empty">Click "Generate" to run an AI analysis of the current statistics.</div></div>
   </div>`;
 
   const chartCards = `<div class="grid">
@@ -127,9 +161,60 @@ function render(d){
     </tr></thead><tbody>${taskRows(d.tasks)}</tbody></table></div>
   </div>`;
 
-  $("#root").innerHTML = kpis + chartCards + tableCard;
+  $("#root").innerHTML = kpis + aiCard + chartCards + tableCard;
   window._tasks = d.tasks;
   draw(d);
+}
+
+function loadAnalysis(){
+  const btn = $("#ai-btn"), body = $("#ai-body"), badges = $("#ai-badges");
+  btn.disabled = true; btn.textContent = "Analyzing…";
+  badges.innerHTML = "";
+  body.innerHTML = '<div class="ai-empty">Running LangGraph analysis via Bedrock… this can take a few seconds.</div>';
+  fetch("/api/analysis").then(r=>r.json()).then(a=>{
+    btn.disabled = false; btn.textContent = "↻ Regenerate";
+    renderAnalysis(a, badges, body);
+  }).catch(e=>{
+    btn.disabled = false; btn.textContent = "✦ Generate";
+    body.innerHTML = `<div class="ai-error">Failed to load AI analysis: ${esc(e)}</div>`;
+  });
+}
+
+function renderAnalysis(a, badges, body){
+  if(a.status === "error"){
+    badges.innerHTML = "";
+    body.innerHTML = `<div class="ai-error">${esc(a.error||"Analysis failed.")}</div>`;
+    return;
+  }
+
+  const pct = v => v==null ? "—" : Math.round(v*100)+"%";
+  badges.innerHTML = `
+    <span class="badge">confidence ${pct(a.confidence)}</span>
+    ${a.health_score!=null ? `<span class="badge">health ${Math.round(a.health_score)}/100</span>` : ""}
+    ${a.status==="partial" ? `<span class="badge" style="color:var(--warn);border-color:var(--warn)">partial</span>` : ""}
+  `;
+
+  const anomalyList = (a.anomalies||[]).length ? `<ul class="ai-list">${a.anomalies.map(x=>`
+    <li class="ai-item"><div class="ai-item-head">
+      <span class="ai-item-title">${esc(x.title)}</span>
+      <span class="tag sev-${esc(x.severity)}">${esc(x.severity)}</span>
+    </div><div class="ai-item-desc">${esc(x.description)}</div></li>`).join("")}</ul>`
+    : '<div class="ai-empty">No anomalies detected.</div>';
+
+  const recList = (a.recommendations||[]).length ? `<ul class="ai-list">${a.recommendations.map(x=>`
+    <li class="ai-item"><div class="ai-item-head">
+      <span class="ai-item-title">${esc(x.title)}</span>
+      <span class="tag pri-${esc(x.priority)}">${esc(x.priority)}</span>
+    </div><div class="ai-item-desc">${esc(x.description)}</div></li>`).join("")}</ul>`
+    : '<div class="ai-empty">No recommendations.</div>';
+
+  body.innerHTML = `
+    <div class="ai-summary">${esc(a.executive_summary)}</div>
+    <div class="ai-section"><h4>Detected anomalies</h4>${anomalyList}</div>
+    <div class="ai-section"><h4>Recommendations</h4>${recList}</div>
+    <div class="ai-section"><h4>Detailed analysis</h4><div class="ai-analysis">${esc(a.detailed_analysis)}</div></div>
+    ${a.error ? `<div class="ai-section ai-error">${esc(a.error)}</div>` : ""}
+  `;
 }
 
 function taskRows(tasks){

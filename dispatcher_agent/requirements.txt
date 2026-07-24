@@ -1,1 +1,9 @@
 Flask==3.1.0
+
+langgraph
+langchain
+langsmith
+langchain-aws
+langchain-community
+boto3
+pydantic
