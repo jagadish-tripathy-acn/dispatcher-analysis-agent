@@ -10,15 +10,18 @@ Usage:
     graph = DispatcherGraph("us.anthropic.claude-sonnet-4-6")  # or override
     response = graph.invoke(stats_payload)           # -> AnalysisResponse
 
-Workflow:  validate -> analyze -> detect_anomalies -> recommend -> summarize -> assemble
+Workflow:  validate -> analyze -> assemble
 Invalid/empty payloads short-circuit straight to `assemble` with status="error".
-Any step that fails is caught and degrades the response to status="partial"
-instead of raising -- the graph never crashes on bad input or a bad model call.
+`analyze` makes exactly ONE Bedrock call that produces the full analysis,
+anomalies, recommendations, and executive summary together (one combined
+structured schema) -- this keeps latency to a single round-trip instead of
+several sequential ones. If it fails, the response degrades to
+status="partial" instead of raising -- the graph never crashes.
 """
 from __future__ import annotations
 
 import logging
-from typing import Any, List, Literal, Optional, TypedDict
+from typing import List, Literal, Optional, TypedDict
 
 from langchain_aws import ChatBedrockConverse
 from langchain_core.messages import HumanMessage, SystemMessage
@@ -30,11 +33,27 @@ logger = logging.getLogger(__name__)
 DEFAULT_MODEL = "us.anthropic.claude-sonnet-4-6"
 MIN_TASKS_FOR_HEALTH_SCORE = 5
 
-BASE_RULES = (
+SYSTEM_PROMPT = (
     "You are a senior site reliability engineer analyzing telemetry from a Teamcenter "
-    "Dispatcher job-processing system. Use ONLY the data given below -- never invent "
-    "metrics, jobs, users, or timestamps. If something needed is missing, say so instead "
-    "of guessing. Respond only via the requested structured schema, no extra text."
+    "Dispatcher job-processing system. Use ONLY the data given below -- never invent metrics, "
+    "jobs, users, or timestamps. If something needed is missing, say so instead of guessing. "
+    "Respond only via the requested structured schema, no extra text.\n\n"
+    "Produce, in this single response:\n"
+    "1. detailed_analysis: a multi-paragraph technical analysis covering throughput, "
+    "queue/processing latency, failure and stuck-task rates, and load concentration across "
+    "jobs/groups/users.\n"
+    "2. health_assessment: a concise statement of overall system health.\n"
+    "3. anomalies: notable deviations or warning signs worth investigating, each with a severity.\n"
+    "4. recommendations: 3-6 concrete, prioritized actions, each traceable to the analysis or an "
+    "anomaly above.\n"
+    "5. executive_summary: STRICT LIMIT of 1-2 short sentences (max ~40 words total). A "
+    "plain-language headline naming the overall health and, if unhealthy, only the single "
+    "biggest issue. Do not enumerate metrics, anomalies, or recommendations here -- that detail "
+    "belongs in detailed_analysis/anomalies/recommendations, not the summary.\n"
+    "6. reasoning: 2-4 sentences on how you reached these conclusions.\n"
+    "7. confidence: 0.0-1.0 based on how complete the input data was.\n"
+    "8. health_score: 0.0-100.0 overall score, or null if the sample size is too small to be "
+    "told sufficient below."
 )
 
 
@@ -53,23 +72,14 @@ class Recommendation(BaseModel):
     priority: Literal["low", "medium", "high", "critical"] = "medium"
 
 
-class SystemAnalysis(BaseModel):
-    """Result of the analysis step."""
+class AnalysisResult(BaseModel):
+    """Everything the single Bedrock call produces, in one combined schema."""
 
     detailed_analysis: str
     health_assessment: str
-
-
-class AnomalyList(BaseModel):
     anomalies: List[Anomaly] = Field(default_factory=list)
-
-
-class RecommendationList(BaseModel):
     recommendations: List[Recommendation] = Field(default_factory=list)
-
-
-class ExecutiveSummary(BaseModel):
-    executive_summary: str
+    executive_summary: str = Field(description="1-2 sentences max, ~40 words.")
     reasoning: str
     confidence: float = Field(ge=0.0, le=1.0)
     health_score: Optional[float] = Field(default=None, ge=0.0, le=100.0)
@@ -94,10 +104,7 @@ class GraphState(TypedDict, total=False):
     stats: dict
     is_valid: bool
     error: Optional[str]
-    analysis: Optional[SystemAnalysis]
-    anomalies: List[Anomaly]
-    recommendations: List[Recommendation]
-    summary: Optional[ExecutiveSummary]
+    result: Optional[AnalysisResult]
     response: AnalysisResponse
 
 
@@ -113,7 +120,7 @@ class DispatcherGraph:
 
     def invoke(self, stats: dict) -> AnalysisResponse:
         """Run the full workflow over a `/api/stats`-shaped payload."""
-        state: GraphState = {"stats": stats or {}, "anomalies": [], "recommendations": []}
+        state: GraphState = {"stats": stats or {}}
         result = self._graph.invoke(state)
         return result["response"]
 
@@ -122,9 +129,6 @@ class DispatcherGraph:
         g = StateGraph(GraphState)
         g.add_node("validate", self._validate)
         g.add_node("analyze", self._analyze)
-        g.add_node("detect_anomalies", self._detect_anomalies)
-        g.add_node("recommend", self._recommend)
-        g.add_node("summarize", self._summarize)
         g.add_node("assemble", self._assemble)
 
         g.add_edge(START, "validate")
@@ -133,14 +137,11 @@ class DispatcherGraph:
             lambda s: "analyze" if s.get("is_valid") else "assemble",
             {"analyze": "analyze", "assemble": "assemble"},
         )
-        g.add_edge("analyze", "detect_anomalies")
-        g.add_edge("detect_anomalies", "recommend")
-        g.add_edge("recommend", "summarize")
-        g.add_edge("summarize", "assemble")
-        g.add_edge("assemble", END) 
+        g.add_edge("analyze", "assemble")
+        g.add_edge("assemble", END)
         return g.compile()
 
-    # -- nodes (each does exactly one step) ---------------------------------
+    # -- nodes ------------------------------------------------------------
     def _validate(self, state: GraphState) -> dict:
         stats = state.get("stats")
         if not isinstance(stats, dict) or not stats.get("has_data"):
@@ -148,94 +149,40 @@ class DispatcherGraph:
         return {"is_valid": True}
 
     def _analyze(self, state: GraphState) -> dict:
+        """Single Bedrock call producing the full analysis, anomalies,
+        recommendations, and executive summary together."""
         try:
-            analysis = self._ask(BASE_RULES, self._analysis_prompt(state["stats"]), SystemAnalysis)
+            result = self._ask(SYSTEM_PROMPT, self._user_prompt(state["stats"]), AnalysisResult)
         except Exception as exc:
             logger.error("analyze failed: %s", exc)
-            return {"analysis": None, "error": f"Analysis failed: {exc}"}
-        return {"analysis": analysis}
-
-    def _detect_anomalies(self, state: GraphState) -> dict:
-        analysis = state.get("analysis")
-        if not analysis:
-            return {"anomalies": []}
-        prompt = f"{self._context(state['stats'])}\n\nAnalysis:\n{analysis.detailed_analysis}"
-        try:
-            result = self._ask(BASE_RULES, prompt, AnomalyList)
-            return {"anomalies": result.anomalies}
-        except Exception as exc:
-            logger.error("detect_anomalies failed: %s", exc)
-            return {"anomalies": []}
-
-    def _recommend(self, state: GraphState) -> dict:
-        analysis = state.get("analysis")
-        if not analysis:
-            return {"recommendations": []}
-        anomaly_txt = self._bullets(state.get("anomalies", []), "severity")
-        prompt = (
-            f"{self._context(state['stats'])}\n\nAnalysis:\n{analysis.detailed_analysis}"
-            f"\n\nAnomalies:\n{anomaly_txt}"
-        )
-        try:
-            result = self._ask(BASE_RULES, prompt, RecommendationList)
-            return {"recommendations": result.recommendations}
-        except Exception as exc:
-            logger.error("recommend failed: %s", exc)
-            return {"recommendations": []}
-
-    def _summarize(self, state: GraphState) -> dict:
-        analysis = state.get("analysis")
-        if not analysis:
-            return {"summary": None}
-        stats = state["stats"]
-        sample_size = (stats.get("kpis") or {}).get("total_tasks", 0)
-        note = (
-            "Sample size is sufficient for a numeric health score."
-            if sample_size >= MIN_TASKS_FOR_HEALTH_SCORE
-            else "Sample size is too small for a reliable health score -- return null for health_score."
-        )
-        prompt = (
-            f"{self._context(stats)}\n\nAnalysis:\n{analysis.detailed_analysis}"
-            f"\n\nAnomalies:\n{self._bullets(state.get('anomalies', []), 'severity')}"
-            f"\n\nRecommendations:\n{self._bullets(state.get('recommendations', []), 'priority')}"
-            f"\n\n{note}"
-        )
-        try:
-            summary = self._ask(BASE_RULES, prompt, ExecutiveSummary)
-        except Exception as exc:
-            logger.error("summarize failed: %s", exc)
-            summary = None
-        return {"summary": summary}
+            return {"result": None, "error": f"Analysis failed: {exc}"}
+        return {"result": result}
 
     def _assemble(self, state: GraphState) -> dict:
         if not state.get("is_valid"):
             return {"response": AnalysisResponse(status="error", error=state.get("error") or "Invalid input.")}
 
-        analysis, summary = state.get("analysis"), state.get("summary")
-        if not analysis or not summary:
+        result = state.get("result")
+        if not result:
             return {
                 "response": AnalysisResponse(
                     status="partial",
-                    executive_summary="Analysis could not be fully generated.",
-                    detailed_analysis=analysis.detailed_analysis if analysis else "",
-                    health_assessment=analysis.health_assessment if analysis else "",
-                    anomalies=state.get("anomalies", []),
-                    recommendations=state.get("recommendations", []),
-                    error=state.get("error") or "One or more analysis steps failed.",
+                    executive_summary="Analysis could not be generated.",
+                    error=state.get("error") or "The analysis step failed.",
                 )
             }
 
         return {
             "response": AnalysisResponse(
                 status="success",
-                executive_summary=summary.executive_summary,
-                detailed_analysis=analysis.detailed_analysis,
-                health_assessment=analysis.health_assessment,
-                anomalies=state.get("anomalies", []),
-                recommendations=state.get("recommendations", []),
-                confidence=summary.confidence,
-                health_score=summary.health_score,
-                reasoning=summary.reasoning,
+                executive_summary=result.executive_summary,
+                detailed_analysis=result.detailed_analysis,
+                health_assessment=result.health_assessment,
+                anomalies=result.anomalies,
+                recommendations=result.recommendations,
+                confidence=result.confidence,
+                health_score=result.health_score,
+                reasoning=result.reasoning,
             )
         }
 
@@ -245,12 +192,14 @@ class DispatcherGraph:
         return self.model.with_structured_output(schema).invoke(messages)
 
     @staticmethod
-    def _analysis_prompt(stats: dict) -> str:
-        return (
-            f"{DispatcherGraph._context(stats)}\n\n"
-            "Write a detailed technical analysis (throughput, latency, failures, stuck tasks, "
-            "load concentration) and an overall health assessment."
+    def _user_prompt(stats: dict) -> str:
+        sample_size = (stats.get("kpis") or {}).get("total_tasks", 0)
+        note = (
+            "sufficient for a numeric health score."
+            if sample_size >= MIN_TASKS_FOR_HEALTH_SCORE
+            else "too small -- return null for health_score."
         )
+        return f"{DispatcherGraph._context(stats)}\n\nSample size is {note}"
 
     @staticmethod
     def _context(stats: dict) -> str:
@@ -277,7 +226,3 @@ class DispatcherGraph:
                 + ", ".join(f"{t.get('task_id')}/{t.get('status')}/{t.get('job')}" for t in stuck[:10])
             )
         return "\n".join(lines)
-
-    @staticmethod
-    def _bullets(items: List[Any], attr: str) -> str:
-        return "\n".join(f"- [{getattr(i, attr)}] {i.title}" for i in items) or "None."
