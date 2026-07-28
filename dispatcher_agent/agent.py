@@ -1,265 +1,228 @@
 """
-Dispatcher Log Agent
-====================
+Dispatcher AI Analysis Agent
+=============================
 
-A self-contained agent that reads Teamcenter Dispatcher client history logs
-straight from the Logs\\ folder, reconstructs each task's lifecycle, and
-computes the statistics that the DispInsights.pbix report used to visualise.
+A LangGraph-based agent that turns the `/api/stats` payload into a
+structured AI analysis using AWS Bedrock (Claude, via the Converse API).
 
-It replaces BOTH Perl scripts (parse_dispatcher_data.pl +
-generate_complete_task_analysis.pl) with one Python component, so there is no
-CSV middleman. The web layer (app.py) just calls DispatcherLogAgent().run().
+Usage:
+    agent = DispatcherGraph()                       # uses DEFAULT_MODEL
+    agent = DispatcherGraph("us.anthropic.claude-sonnet-4-6")  # or override
+    response = agent.invoke(stats_payload)           # -> AnalysisResponse
 
-Log line format (comma-separated payload after a log prefix):
-    <logtime>,<ms> INFO  - <time> - TaskID,Status,Site,JobName,0,User,Group,
-        Provider,Date,1,Target,0,3, <State,Timestamp> <State,Timestamp> ...
-The trailing (State, Timestamp) pairs (from index 13 on) are the lifecycle
-transitions, e.g. INITIAL/... PREPARING/... SCHEDULED/... TRANSLATING/...
-LOADING/... COMPLETE/...
+Workflow:  validate -> analyze -> assemble
+Invalid/empty payloads short-circuit straight to `assemble` with status="error".
+`analyze` makes exactly ONE Bedrock call that produces the full analysis,
+anomalies, recommendations, and executive summary together (one combined
+structured schema) -- this keeps latency to a single round-trip instead of
+several sequential ones. If it fails, the response degrades to
+status="partial" instead of raising -- the agent never crashes.
 """
-import glob
-import os
-import re
-from collections import Counter, defaultdict
-from datetime import datetime
+from __future__ import annotations
 
-# ---- config --------------------------------------------------------------
-# dispatcher_agent/  ->  parent is the Disp_Analysis_PERL root that holds Logs\
-ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-DEFAULT_LOG_DIR = os.path.join(ROOT, "Logs")
+import logging
+from typing import List, Literal, Optional, TypedDict
 
-# Valid dispatcher lifecycle states.
-STATES = {
-    "INITIAL", "PREPARING", "SCHEDULED", "TRANSLATING", "LOADING",
-    "COMPLETE", "TERMINAL", "DELETE", "DUPLICATE",
-}
-TERMINAL_STATES = {"COMPLETE", "TERMINAL", "DELETE", "DUPLICATE"}
+from langchain_aws import ChatBedrockConverse
+from langchain_core.messages import HumanMessage, SystemMessage
+from langgraph.graph import END, START, StateGraph
+from pydantic import BaseModel, Field
 
-# Field positions inside the comma-split payload.
-IDX_TASK_ID, IDX_STATUS, IDX_SITE, IDX_JOB = 0, 1, 2, 3
-IDX_USER, IDX_GROUP, IDX_PROVIDER = 5, 6, 7
-IDX_TARGET = 10
-IDX_STATES_START = 13  # trailing (state, timestamp) pairs begin here
+logger = logging.getLogger(__name__)
 
-# Pull the payload (everything after "<time> - ") off the log prefix.
-_LINE_RE = re.compile(
-    r"^\d{4}-\d\d-\d\d \d\d:\d\d:\d\d,\d+\s+\w+\s+-\s+"
-    r"\d{4}-\d\d-\d\d \d\d:\d\d:\d\d\s+-\s+(?P<payload>.+)$"
+DEFAULT_MODEL = "us.anthropic.claude-sonnet-4-6"
+MIN_TASKS_FOR_HEALTH_SCORE = 5
+
+SYSTEM_PROMPT = (
+    "You are a senior site reliability engineer analyzing telemetry from a Teamcenter "
+    "Dispatcher job-processing system. Use ONLY the data given below -- never invent metrics, "
+    "jobs, users, or timestamps. If something needed is missing, say so instead of guessing. "
+    "Respond only via the requested structured schema, no extra text.\n\n"
+    "Produce, in this single response:\n"
+    "1. detailed_analysis: a multi-paragraph technical analysis covering throughput, "
+    "queue/processing latency, failure and stuck-task rates, and load concentration across "
+    "jobs/groups/users.\n"
+    "2. health_assessment: a concise statement of overall system health.\n"
+    "3. anomalies: notable deviations or warning signs worth investigating, each with a severity.\n"
+    "4. recommendations: 3-6 concrete, prioritized actions, each traceable to the analysis or an "
+    "anomaly above.\n"
+    "5. executive_summary: STRICT LIMIT of 1-2 short sentences (max ~40 words total). A "
+    "plain-language headline naming the overall health and, if unhealthy, only the single "
+    "biggest issue. Do not enumerate metrics, anomalies, or recommendations here -- that detail "
+    "belongs in detailed_analysis/anomalies/recommendations, not the summary.\n"
+    "6. reasoning: 2-4 sentences on how you reached these conclusions.\n"
+    "7. confidence: 0.0-1.0 based on how complete the input data was.\n"
+    "8. health_score: 0.0-100.0 overall score, or null if the sample size is too small to be "
+    "told sufficient below."
 )
 
-QUEUE_BUCKETS = ["<10", "10-30", "30-60", ">60"]
+
+# --------------------------------------------------------------------------- #
+# Structured output schemas
+# --------------------------------------------------------------------------- #
+class Anomaly(BaseModel):
+    title: str
+    description: str
+    severity: Literal["low", "medium", "high", "critical"] = "medium"
 
 
-def _parse_dt(value):
-    try:
-        return datetime.strptime((value or "").strip(), "%Y-%m-%d %H:%M:%S")
-    except (ValueError, TypeError):
-        return None
+class Recommendation(BaseModel):
+    title: str
+    description: str
+    priority: Literal["low", "medium", "high", "critical"] = "medium"
 
 
-def _bucket(minutes):
-    if minutes < 10:
-        return "<10"
-    if minutes < 30:
-        return "10-30"
-    if minutes < 60:
-        return "30-60"
-    return ">60"
+class AnalysisResult(BaseModel):
+    """Everything the single Bedrock call produces, in one combined schema."""
+
+    detailed_analysis: str
+    health_assessment: str
+    anomalies: List[Anomaly] = Field(default_factory=list)
+    recommendations: List[Recommendation] = Field(default_factory=list)
+    executive_summary: str = Field(description="1-2 sentences max, ~40 words.")
+    reasoning: str
+    confidence: float = Field(ge=0.0, le=1.0)
+    health_score: Optional[float] = Field(default=None, ge=0.0, le=100.0)
 
 
-def _avg(values):
-    vals = [v for v in values if v is not None]
-    return round(sum(vals) / len(vals), 1) if vals else 0.0
+class AnalysisResponse(BaseModel):
+    """The single object `DispatcherGraph.invoke()` returns, success or failure."""
+
+    status: Literal["success", "partial", "error"] = "success"
+    executive_summary: str = ""
+    detailed_analysis: str = ""
+    health_assessment: str = ""
+    anomalies: List[Anomaly] = Field(default_factory=list)
+    recommendations: List[Recommendation] = Field(default_factory=list)
+    confidence: float = 0.0
+    health_score: Optional[float] = None
+    reasoning: str = ""
+    error: Optional[str] = None
 
 
-class DispatcherLogAgent:
-    """Parses dispatcher logs and produces a stats dict for the dashboard."""
+class GraphState(TypedDict, total=False):
+    stats: dict
+    is_valid: bool
+    error: Optional[str]
+    result: Optional[AnalysisResult]
+    response: AnalysisResponse
 
-    def __init__(self, log_dir=DEFAULT_LOG_DIR):
-        self.log_dir = log_dir
-        # Per-task accumulator.
-        self.tasks = {}          # task_id -> meta dict
-        self.state_times = defaultdict(dict)  # task_id -> {state: earliest datetime}
-        self.files_read = []
 
-    # -- ingest -----------------------------------------------------------
-    def _ingest_line(self, line):
-        m = _LINE_RE.match(line.strip())
-        if not m:
-            return
-        parts = [p.strip() for p in m.group("payload").split(",")]
-        if len(parts) <= IDX_TARGET:
-            return
+# --------------------------------------------------------------------------- #
+# The graph
+# --------------------------------------------------------------------------- #
+class DispatcherGraph:
+    """LangGraph-based AI analysis engine for dispatcher system statistics."""
 
-        task_id = parts[IDX_TASK_ID]
-        if not task_id:
-            return
+    def __init__(self, model_name: str = DEFAULT_MODEL):
+        self.model = ChatBedrockConverse(model=model_name)
+        self._graph = self._build_graph()
 
-        # Static metadata (first non-empty wins).
-        meta = self.tasks.setdefault(task_id, {
-            "task_id": task_id, "job": "", "user": "", "group": "",
-            "target": "", "provider": "", "site": "", "current_status": "",
-            "last_seen": None,
-        })
-        for key, idx in (("job", IDX_JOB), ("user", IDX_USER), ("group", IDX_GROUP),
-                         ("target", IDX_TARGET), ("provider", IDX_PROVIDER), ("site", IDX_SITE)):
-            if not meta[key] and idx < len(parts):
-                meta[key] = parts[idx]
+    def invoke(self, stats: dict) -> AnalysisResponse:
+        """Run the full workflow over a `/api/stats`-shaped payload."""
+        state: GraphState = {"stats": stats or {}}
+        result = self._graph.invoke(state)
+        return result["response"]
 
-        # Current status = status on the most recent line for this task.
-        line_time = _parse_dt(parts[8]) if len(parts) > 8 else None
-        cur_status = parts[IDX_STATUS] if IDX_STATUS < len(parts) else ""
-        if cur_status in STATES and (meta["last_seen"] is None or (line_time and line_time >= meta["last_seen"])):
-            meta["current_status"] = cur_status
-            if line_time:
-                meta["last_seen"] = line_time
+    # -- graph wiring ------------------------------------------------------
+    def _build_graph(self):
+        g = StateGraph(GraphState)
+        g.add_node("validate", self._validate)
+        g.add_node("analyze", self._analyze)
+        g.add_node("assemble", self._assemble)
 
-        # Trailing (state, timestamp) pairs -> keep earliest time per state.
-        i = IDX_STATES_START
-        while i + 1 < len(parts):
-            state, ts = parts[i], parts[i + 1]
-            if state in STATES:
-                dt = _parse_dt(ts)
-                if dt:
-                    existing = self.state_times[task_id].get(state)
-                    if existing is None or dt < existing:
-                        self.state_times[task_id][state] = dt
-                i += 2
-            else:
-                i += 1
-
-    def ingest(self):
-        pattern = os.path.join(self.log_dir, "*.log")
-        for path in sorted(glob.glob(pattern)):
-            self.files_read.append(os.path.basename(path))
-            with open(path, "r", encoding="utf-8", errors="ignore") as fh:
-                for line in fh:
-                    self._ingest_line(line)
-        return self
-
-    # -- derive per-task timings -----------------------------------------
-    def _task_timings(self):
-        rows = []
-        for task_id, meta in self.tasks.items():
-            states = self.state_times.get(task_id, {})
-            initial = states.get("INITIAL")
-            translating = states.get("TRANSLATING")
-            end_state = next((s for s in ("COMPLETE", "TERMINAL", "DELETE", "DUPLICATE") if s in states), None)
-            end_time = states.get(end_state) if end_state else None
-
-            queue = proc = total = None
-            if initial and translating:
-                queue = max(0, int((translating - initial).total_seconds() // 60))
-            if translating and end_time:
-                proc = max(0, int((end_time - translating).total_seconds() // 60))
-            if initial and end_time:
-                total = max(0, int((end_time - initial).total_seconds() // 60))
-
-            rows.append({
-                **meta,
-                "initial": initial, "translating": translating,
-                "end_state": end_state, "end_time": end_time,
-                "queue_min": queue, "proc_min": proc, "total_min": total,
-                "completed": end_state is not None,
-            })
-        return rows
-
-    # -- public: compute the full stats payload --------------------------
-    def run(self):
-        rows = self._task_timings()
-        total_tasks = len(rows)
-        # "ended" = reached any lifecycle end state (COMPLETE/TERMINAL/DELETE/DUPLICATE);
-        # used for timing stats since queue/proc/total times are meaningful regardless of outcome.
-        ended = [r for r in rows if r["completed"]]
-        stuck = [r for r in rows if not r["completed"]]
-        # "Completed" KPI = successful completions only; "Terminal jobs" = failed/aborted only.
-        # These two are mutually exclusive (unlike DELETE/DUPLICATE, which aren't broken out).
-        succeeded = [r for r in ended if r["current_status"] == "COMPLETE"]
-        terminal = [r for r in ended if r["current_status"] == "TERMINAL"]
-
-        # KPIs
-        queue_vals = [r["queue_min"] for r in ended]
-        proc_vals = [r["proc_min"] for r in ended]
-        total_vals = [r["total_min"] for r in ended]
-
-        # Status distribution (by each task's current status)
-        status_counts = Counter(r["current_status"] or "UNKNOWN" for r in rows)
-
-        # Queue-time buckets
-        bucket_counts = Counter(_bucket(r["queue_min"]) for r in ended if r["queue_min"] is not None)
-        queue_distribution = [{"range": b, "count": bucket_counts.get(b, 0)} for b in QUEUE_BUCKETS]
-
-        # By job type
-        by_job = defaultdict(lambda: {"count": 0, "queue": [], "proc": [], "total": []})
-        for r in rows:
-            j = by_job[r["job"] or "unknown"]
-            j["count"] += 1
-            j["queue"].append(r["queue_min"])
-            j["proc"].append(r["proc_min"])
-            j["total"].append(r["total_min"])
-        job_breakdown = sorted(
-            ({"job": name, "count": d["count"], "avg_queue": _avg(d["queue"]),
-              "avg_proc": _avg(d["proc"]), "avg_total": _avg(d["total"])}
-             for name, d in by_job.items()),
-            key=lambda x: x["count"], reverse=True,
+        g.add_edge(START, "validate")
+        g.add_conditional_edges(
+            "validate",
+            lambda s: "analyze" if s.get("is_valid") else "assemble",
+            {"analyze": "analyze", "assemble": "assemble"},
         )
+        g.add_edge("analyze", "assemble")
+        g.add_edge("assemble", END)
+        return g.compile()
 
-        # By group and by user (top contributors)
-        group_counts = Counter(r["group"] or "unknown" for r in rows)
-        user_counts = Counter(r["user"] or "unknown" for r in rows)
+    # -- nodes ------------------------------------------------------------
+    def _validate(self, state: GraphState) -> dict:
+        stats = state.get("stats")
+        if not isinstance(stats, dict) or not stats.get("has_data"):
+            return {"is_valid": False, "error": "Payload is missing or has no data to analyze."}
+        return {"is_valid": True}
 
-        # Throughput: completions per minute (end_time)
-        per_min = Counter()
-        for r in ended:
-            if r["end_time"]:
-                per_min[r["end_time"].strftime("%Y-%m-%d %H:%M")] += 1
-        throughput = [{"t": t, "count": per_min[t]} for t in sorted(per_min)]
+    def _analyze(self, state: GraphState) -> dict:
+        """Single Bedrock call producing the full analysis, anomalies,
+        recommendations, and executive summary together."""
+        try:
+            result = self._ask(SYSTEM_PROMPT, self._user_prompt(state["stats"]), AnalysisResult)
+        except Exception as exc:
+            logger.error("analyze failed: %s", exc)
+            return {"result": None, "error": f"Analysis failed: {exc}"}
+        return {"result": result}
 
-        # Task detail table (cap for payload size; page can paginate later)
-        def _fmt(dt):
-            return dt.strftime("%Y-%m-%d %H:%M:%S") if dt else ""
-        task_rows = [{
-            "task_id": r["task_id"], "job": r["job"], "user": r["user"],
-            "group": r["group"], "target": r["target"], "provider": r["provider"],
-            "status": r["current_status"], "initial": _fmt(r["initial"]),
-            "translating": _fmt(r["translating"]), "end_state": r["end_state"] or "",
-            "end_time": _fmt(r["end_time"]), "queue_min": r["queue_min"],
-            "proc_min": r["proc_min"], "total_min": r["total_min"],
-            "completed": r["completed"],
-        } for r in sorted(rows, key=lambda x: (x["total_min"] is None, -(x["total_min"] or 0)))]
+    def _assemble(self, state: GraphState) -> dict:
+        if not state.get("is_valid"):
+            return {"response": AnalysisResponse(status="error", error=state.get("error") or "Invalid input.")}
+
+        result = state.get("result")
+        if not result:
+            return {
+                "response": AnalysisResponse(
+                    status="partial",
+                    executive_summary="Analysis could not be generated.",
+                    error=state.get("error") or "The analysis step failed.",
+                )
+            }
 
         return {
-            "files_read": self.files_read,
-            "has_data": total_tasks > 0,
-            "kpis": {
-                "total_tasks": total_tasks,
-                "completed": len(succeeded),
-                "stuck": len(stuck),
-                "stuck_pct": round(100 * len(stuck) / total_tasks, 1) if total_tasks else 0.0,
-                "terminal_jobs": len(terminal),
-                "terminal_pct": round(100 * len(terminal) / total_tasks, 1) if total_tasks else 0.0,
-                "avg_queue_min": _avg(queue_vals),
-                "max_queue_min": max([q for q in queue_vals if q is not None], default=0),
-                "avg_proc_min": _avg(proc_vals),
-                "avg_total_min": _avg(total_vals),
-            },
-            "status_distribution": [{"status": s, "count": c} for s, c in status_counts.most_common()],
-            "queue_distribution": queue_distribution,
-            "job_breakdown": job_breakdown,
-            "group_distribution": [{"group": g, "count": c} for g, c in group_counts.most_common(10)],
-            "user_distribution": [{"user": u, "count": c} for u, c in user_counts.most_common(10)],
-            "throughput": throughput,
-            "stuck_tasks": [{"task_id": r["task_id"], "job": r["job"],
-                             "status": r["current_status"], "user": r["user"]} for r in stuck],
-            "tasks": task_rows,
+            "response": AnalysisResponse(
+                status="success",
+                executive_summary=result.executive_summary,
+                detailed_analysis=result.detailed_analysis,
+                health_assessment=result.health_assessment,
+                anomalies=result.anomalies,
+                recommendations=result.recommendations,
+                confidence=result.confidence,
+                health_score=result.health_score,
+                reasoning=result.reasoning,
+            )
         }
 
+    # -- small helpers -------------------------------------------------------
+    def _ask(self, system_prompt: str, user_prompt: str, schema: type[BaseModel]) -> BaseModel:
+        messages = [SystemMessage(content=system_prompt), HumanMessage(content=user_prompt)]
+        return self.model.with_structured_output(schema).invoke(messages)
 
-def analyse(log_dir=DEFAULT_LOG_DIR):
-    """Convenience entry point used by the web layer."""
-    return DispatcherLogAgent(log_dir).ingest().run()
+    @staticmethod
+    def _user_prompt(stats: dict) -> str:
+        sample_size = (stats.get("kpis") or {}).get("total_tasks", 0)
+        note = (
+            "sufficient for a numeric health score."
+            if sample_size >= MIN_TASKS_FOR_HEALTH_SCORE
+            else "too small -- return null for health_score."
+        )
+        return f"{DispatcherGraph._context(stats)}\n\nSample size is {note}"
 
-
-if __name__ == "__main__":
-    import json
-    print(json.dumps(analyse(), indent=2))
+    @staticmethod
+    def _context(stats: dict) -> str:
+        k = stats.get("kpis") or {}
+        lines = [
+            f"Total tasks: {k.get('total_tasks', 0)}",
+            f"Completed: {k.get('completed', 0)}",
+            f"Stuck: {k.get('stuck', 0)} ({k.get('stuck_pct', 0)}%)",
+            f"Terminal/failed: {k.get('terminal_jobs', 0)} ({k.get('terminal_pct', 0)}%)",
+            f"Avg queue time: {k.get('avg_queue_min', 0)} min (max {k.get('max_queue_min', 0)} min)",
+            f"Avg processing time: {k.get('avg_proc_min', 0)} min",
+            f"Avg total lifecycle time: {k.get('avg_total_min', 0)} min",
+        ]
+        jobs = stats.get("job_breakdown") or []
+        if jobs:
+            lines.append(
+                "Job breakdown: "
+                + "; ".join(f"{j.get('job')} (count={j.get('count')}, avg_total={j.get('avg_total')}m)" for j in jobs[:10])
+            )
+        stuck = stats.get("stuck_tasks") or []
+        if stuck:
+            lines.append(
+                f"Stuck tasks ({len(stuck)} total, sample): "
+                + ", ".join(f"{t.get('task_id')}/{t.get('status')}/{t.get('job')}" for t in stuck[:10])
+            )
+        return "\n".join(lines)

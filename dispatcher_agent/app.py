@@ -2,9 +2,9 @@
 Dispatcher Insights web app.
 
 Serves an interactive HTML page (the replacement for DispInsights.pbix). All the
-work is done by the DispatcherLogAgent in agent.py, which reads the logs in
+work is done by the DispatcherLogParser in parser.py, which reads the logs in
 Logs\\ directly — no Perl, no CSV. AI analysis of that same stats payload is
-delegated to the DispatcherGraph LangGraph workflow in graph.py.
+delegated to the DispatcherGraph LangGraph agent in agent.py.
 
 Run:  python app.py   ->  http://127.0.0.1:5710/
 """
@@ -13,8 +13,8 @@ from datetime import datetime
 
 from flask import Flask, jsonify, render_template
 
-import agent
-from graph import DispatcherGraph
+import parser
+from agent import DispatcherGraph
 
 app = Flask(__name__)
 logging.basicConfig(level=logging.INFO)
@@ -40,7 +40,7 @@ def index():
 @app.route("/api/stats")
 def api_stats():
     """The full stats payload the page renders."""
-    data = agent.analyse()
+    data = parser.analyse()
     data["generated_at"] = datetime.now().strftime("%d %b %Y, %H:%M:%S")
     return jsonify(data)
 
@@ -49,12 +49,12 @@ def api_stats():
 def api_analysis():
     """AI-generated analysis of the current stats snapshot.
 
-    Re-parses the logs (via agent.analyse()) and runs the result through the
+    Re-parses the logs (via parser.analyse()) and runs the result through the
     DispatcherGraph LangGraph workflow. Kept as a separate, on-demand route
     from /api/stats so a slow/unavailable LLM never blocks the dashboard's
     core charts.
     """
-    stats = agent.analyse()
+    stats = parser.analyse()
     try:
         response = _get_analysis_graph().invoke(stats)
     except Exception:
