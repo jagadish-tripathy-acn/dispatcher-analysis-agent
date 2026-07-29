@@ -165,22 +165,38 @@ class DispatcherLogParser:
         return rows
 
     # -- public: compute the full stats payload --------------------------
-    def run(self):
+    def run(self, date_from=None, date_to=None):
         rows = self._task_timings()
+
+        # Apply optional date window based on the task's initial (start) timestamp.
+        if date_from or date_to:
+            dt_from = datetime.strptime(date_from, "%Y-%m-%d") if date_from else None
+            dt_to   = datetime.strptime(date_to,   "%Y-%m-%d").replace(hour=23, minute=59, second=59) if date_to else None
+            def _in_window(r):
+                dt = r["initial"] or r["end_time"]
+                if not dt:
+                    return dt_from is None  # undated: include only when no lower bound
+                if dt_from and dt < dt_from: return False
+                if dt_to   and dt > dt_to:   return False
+                return True
+            rows = [r for r in rows if _in_window(r)]
+
         total_tasks = len(rows)
         # "ended" = reached any lifecycle end state (COMPLETE/TERMINAL/DELETE/DUPLICATE);
         # used for timing stats since queue/proc/total times are meaningful regardless of outcome.
-        ended = [r for r in rows if r["completed"]]
-        stuck = [r for r in rows if not r["completed"]]
-        # "Completed" KPI = successful completions only; "Terminal jobs" = failed/aborted only.
-        # These two are mutually exclusive (unlike DELETE/DUPLICATE, which aren't broken out).
-        succeeded = [r for r in ended if r["current_status"] == "COMPLETE"]
-        terminal = [r for r in ended if r["current_status"] == "TERMINAL"]
+        OTHER_STATES = {"INITIAL", "PREPARING", "TRANSLATING", "LOADING"}
+        ended     = [r for r in rows if r["completed"]]
+        in_queue  = [r for r in rows if r["current_status"] == "SCHEDULED"]
+        succeeded = [r for r in rows if r["end_state"] == "COMPLETE"]
+        terminal  = [r for r in rows if r["end_state"] == "TERMINAL"]
+        deleted   = [r for r in rows if r["end_state"] == "DELETE"]
+        duplicate = [r for r in rows if r["end_state"] == "DUPLICATE"]
+        other     = [r for r in rows if r["current_status"] in OTHER_STATES]
 
         # KPIs
         queue_vals = [r["queue_min"] for r in ended]
         proc_vals = [r["proc_min"] for r in ended]
-        total_vals = [r["total_min"] for r in ended]
+        total_vals = [r["total_min"] for r in succeeded]
 
         # Status distribution (by each task's current status)
         status_counts = Counter(r["current_status"] or "UNKNOWN" for r in rows)
@@ -196,7 +212,8 @@ class DispatcherLogParser:
             j["count"] += 1
             j["queue"].append(r["queue_min"])
             j["proc"].append(r["proc_min"])
-            j["total"].append(r["total_min"])
+            if r["end_state"] == "COMPLETE":
+                j["total"].append(r["total_min"])
         job_breakdown = sorted(
             ({"job": name, "count": d["count"], "avg_queue": _avg(d["queue"]),
               "avg_proc": _avg(d["proc"]), "avg_total": _avg(d["total"])}
@@ -234,10 +251,16 @@ class DispatcherLogParser:
             "kpis": {
                 "total_tasks": total_tasks,
                 "completed": len(succeeded),
-                "stuck": len(stuck),
-                "stuck_pct": round(100 * len(stuck) / total_tasks, 1) if total_tasks else 0.0,
+                "in_queue": len(in_queue),
+                "in_queue_pct": round(100 * len(in_queue) / total_tasks, 1) if total_tasks else 0.0,
                 "terminal_jobs": len(terminal),
                 "terminal_pct": round(100 * len(terminal) / total_tasks, 1) if total_tasks else 0.0,
+                "deleted": len(deleted),
+                "deleted_pct": round(100 * len(deleted) / total_tasks, 1) if total_tasks else 0.0,
+                "duplicate": len(duplicate),
+                "duplicate_pct": round(100 * len(duplicate) / total_tasks, 1) if total_tasks else 0.0,
+                "other": len(other),
+                "other_pct": round(100 * len(other) / total_tasks, 1) if total_tasks else 0.0,
                 "avg_queue_min": _avg(queue_vals),
                 "max_queue_min": max([q for q in queue_vals if q is not None], default=0),
                 "avg_proc_min": _avg(proc_vals),
@@ -249,15 +272,15 @@ class DispatcherLogParser:
             "group_distribution": [{"group": g, "count": c} for g, c in group_counts.most_common(10)],
             "user_distribution": [{"user": u, "count": c} for u, c in user_counts.most_common(10)],
             "throughput": throughput,
-            "stuck_tasks": [{"task_id": r["task_id"], "job": r["job"],
-                             "status": r["current_status"], "user": r["user"]} for r in stuck],
+            "in_queue_tasks": [{"task_id": r["task_id"], "job": r["job"],
+                                   "status": r["current_status"], "user": r["user"]} for r in in_queue],
             "tasks": task_rows,
         }
 
 
-def analyse(log_dir=DEFAULT_LOG_DIR):
+def analyse(log_dir=DEFAULT_LOG_DIR, date_from=None, date_to=None):
     """Convenience entry point used by the web layer."""
-    return DispatcherLogParser(log_dir).ingest().run()
+    return DispatcherLogParser(log_dir).ingest().run(date_from=date_from, date_to=date_to)
 
 
 if __name__ == "__main__":

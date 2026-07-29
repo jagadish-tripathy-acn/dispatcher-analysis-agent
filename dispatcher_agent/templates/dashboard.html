@@ -5,28 +5,36 @@
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>Dispatcher Insights</title>
 <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/chrono-node@2.7.7/dist/chrono.min.js"></script>
 <style>
   :root{
-    --bg:#0b0f1a; --card:#141b30; --card2:#1a2340; --line:#233156; --ink:#eef2fb;
-    --dim:#9aa7c8; --faint:#5f6d92; --indigo:#7c8cff; --cyan:#35d0d6;
-    --ok:#35d6a5; --warn:#ffcb5c; --crit:#ff6f8b; --mono:"Consolas",monospace;
+    --bg:#f0f4fa; --card:#ffffff; --card2:#eef2fb; --line:#dde3ef; --ink:#1a2340;
+    --dim:#4a5578; --faint:#7a8ab0; --indigo:#5c6ef5; --cyan:#0aabaf;
+    --ok:#0d8b63; --warn:#9a6800; --crit:#c4294a; --mono:"Consolas",monospace;
   }
   *{box-sizing:border-box;margin:0;padding:0}
   body{font-family:"Segoe UI",system-ui,sans-serif;color:var(--ink);font-size:14px;
-    background:radial-gradient(900px 500px at 88% -8%,rgba(124,140,255,.14),transparent 60%),var(--bg);min-height:100vh}
+    background:radial-gradient(900px 500px at 88% -8%,rgba(92,110,245,.08),transparent 60%),var(--bg);min-height:100vh}
   header{display:flex;align-items:center;gap:14px;padding:15px 30px;border-bottom:1px solid var(--line);
-    position:sticky;top:0;background:rgba(11,15,26,.85);backdrop-filter:blur(10px);z-index:5}
-  header .glyph{width:34px;height:34px;border-radius:9px;display:grid;place-items:center;font-weight:900;color:#0b0f1a;
+    position:sticky;top:0;background:rgba(240,244,250,.9);backdrop-filter:blur(10px);z-index:5}
+  header .glyph{width:34px;height:34px;border-radius:9px;display:grid;place-items:center;font-weight:900;color:#ffffff;
     background:conic-gradient(from 200deg,var(--indigo),var(--cyan),var(--indigo))}
   header h1{font-size:16px;font-weight:700}
   header h1 small{display:block;font-size:10.5px;color:var(--faint);font-weight:500;letter-spacing:.5px}
   header .grow{flex:1}
   header .pill{font-size:11.5px;color:var(--dim);border:1px solid var(--line);border-radius:999px;padding:6px 13px}
-  .btn{font-size:12px;color:#0b0f1a;background:var(--cyan);border:none;border-radius:8px;padding:7px 14px;cursor:pointer;font-weight:700;flex-shrink:0}
+  .btn{font-size:12px;color:#ffffff;background:var(--cyan);border:none;border-radius:8px;padding:7px 14px;cursor:pointer;font-weight:700;flex-shrink:0}
   .btn:hover{filter:brightness(1.1)}
   .btn:disabled{opacity:.55;cursor:not-allowed;filter:none}
+  .btn-ghost{font-size:11.5px;color:var(--dim);background:transparent;border:1px solid var(--line);border-radius:8px;
+    padding:5px 12px;cursor:pointer;font-weight:600;transition:background .15s,color .15s;flex-shrink:0}
+  .btn-ghost:hover{background:var(--card2);color:var(--ink)}
   .page{max-width:1180px;margin:0 auto;padding:24px 30px 70px}
   .kpis{display:grid;grid-template-columns:repeat(4,1fr);gap:12px;margin-bottom:22px}
+  .kpi-row{display:contents}
+  .kpi-row-label{grid-column:1/-1;font-size:10px;font-weight:700;text-transform:uppercase;
+    letter-spacing:.6px;color:var(--faint);padding:4px 2px 0;border-top:1px solid var(--line);margin-top:2px}
+  .kpi-row-label:first-child{border-top:none;padding-top:0}
   .kpi{background:var(--card);border:1px solid var(--line);border-radius:14px;padding:16px 18px}
   .kpi .v{font-family:var(--mono);font-size:28px;font-weight:800}
   .kpi .v small{font-size:13px;color:var(--faint)}
@@ -34,7 +42,7 @@
   .kpi.warn .v{color:var(--warn)} .kpi.crit .v{color:var(--crit)} .kpi.ok .v{color:var(--ok)}
   .grid{display:grid;grid-template-columns:1fr 1fr;gap:16px}
   .card{background:var(--card);border:1px solid var(--line);border-radius:16px;padding:18px 20px}
-  .card h3{font-size:13px;font-weight:700;margin-bottom:14px;display:flex;justify-content:space-between}
+  .card h3{font-size:13px;font-weight:700;margin-bottom:14px;display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:8px}
   .card h3 .sub{font-size:11px;color:var(--faint);font-weight:500}
   .card.wide{grid-column:1 / -1}
   canvas{max-height:300px}
@@ -46,18 +54,26 @@
   .tag{font-size:10px;font-weight:700;padding:2px 8px;border-radius:6px}
   .tag.ok{background:rgba(53,214,165,.14);color:var(--ok)}
   .tag.stuck{background:rgba(255,111,139,.14);color:var(--crit)}
+  .tag.warn{background:rgba(255,203,92,.16);color:var(--warn)}
   .tag.sev-low,.tag.pri-low{background:rgba(53,214,165,.14);color:var(--ok)}
   .tag.sev-medium,.tag.pri-medium{background:rgba(255,203,92,.16);color:var(--warn)}
   .tag.sev-high,.tag.pri-high{background:rgba(255,111,139,.14);color:var(--crit)}
   .tag.sev-critical,.tag.pri-critical{background:rgba(255,111,139,.28);color:var(--crit)}
+
+  /* ── AI card ─────────────────────────────────────────────────── */
   .ai-card .ai-head{display:flex;align-items:center;gap:12px;margin-bottom:4px;flex-wrap:wrap}
   .ai-card .ai-head h3{display:flex;align-items:baseline;gap:8px;justify-content:flex-start;
     margin-bottom:0;flex:1 1 auto;min-width:0}
   .ai-card .ai-head h3 .sub{white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
-  .ai-card .ai-badges{display:flex;gap:8px;margin-left:auto;flex-shrink:0}
+  .ai-card .ai-head-right{display:flex;align-items:center;gap:8px;flex-shrink:0}
+  .ai-gauge{flex-shrink:0}
+  .ai-gauge-label{font-family:var(--mono);font-size:11px;fill:var(--dim)}
+  .ai-gauge-score{font-family:var(--mono);font-size:13px;font-weight:700}
   .ai-card .badge{font-family:var(--mono);font-size:11px;color:var(--dim);border:1px solid var(--line);
     border-radius:999px;padding:4px 11px;white-space:nowrap}
-  .ai-summary{font-size:14px;line-height:1.6;color:var(--ink);margin:10px 0 16px}
+  .ai-summary{font-size:14px;line-height:1.6;color:var(--ink);margin:10px 0 4px}
+  .ai-assessment{font-size:12.5px;line-height:1.6;color:var(--dim);margin:0 0 14px;
+    padding:8px 12px;background:var(--card2);border-left:3px solid var(--indigo);border-radius:0 8px 8px 0}
   .ai-section{margin-top:16px}
   .ai-section h4{font-size:11px;color:var(--faint);text-transform:uppercase;letter-spacing:.4px;margin-bottom:8px}
   .ai-analysis{font-size:12.5px;line-height:1.7;color:var(--dim);white-space:pre-wrap}
@@ -68,6 +84,13 @@
   .ai-item .ai-item-desc{font-size:12px;color:var(--dim);line-height:1.5}
   .ai-empty{font-size:12px;color:var(--faint)}
   .ai-error{font-size:12.5px;color:var(--crit)}
+  /* reasoning collapsible */
+  .ai-reasoning-toggle{font-size:11px;color:var(--faint);background:none;border:none;cursor:pointer;
+    padding:0;text-decoration:underline dotted;margin-top:6px}
+  .ai-reasoning-toggle:hover{color:var(--dim)}
+  .ai-reasoning{font-size:12px;line-height:1.6;color:var(--faint);margin-top:6px;
+    padding:8px 12px;background:var(--card2);border-radius:8px;white-space:pre-wrap}
+  /* body collapse */
   .ai-body-wrap{position:relative}
   .ai-body-collapsed{max-height:110px;overflow:hidden}
   .ai-body-collapsed::after{content:"";position:absolute;bottom:0;left:0;right:0;height:48px;
@@ -76,13 +99,35 @@
     color:var(--dim);background:transparent;border:1px solid var(--line);border-radius:8px;
     padding:5px 0;cursor:pointer;transition:background .15s,color .15s}
   .ai-expand-btn:hover{background:var(--card2);color:var(--ink)}
-  .filter{font-size:12px;color:var(--dim);background:var(--card2);border:1px solid var(--line);border-radius:8px;padding:6px 10px}
+
+  /* ── Table toolbar ───────────────────────────────────────────── */
+  .table-toolbar{display:flex;align-items:center;gap:8px;flex-wrap:wrap;margin-bottom:10px}
+  .filter{font-size:12px;color:var(--dim);background:var(--card2);border:1px solid var(--line);border-radius:8px;padding:6px 10px;flex:1;min-width:160px}
+  .sfbtn{font-size:11px;padding:4px 12px;border-radius:6px;border:1px solid var(--line);
+    background:transparent;color:var(--dim);cursor:pointer;font-weight:600;transition:background .15s}
+  .sfbtn:hover{background:var(--card2);color:var(--ink)}
+  .sfbtn.active{background:var(--indigo);color:#fff;border-color:var(--indigo)}
+
   .loading{text-align:center;color:var(--faint);padding:60px}
   .thru-filters{display:flex;gap:5px;margin-left:auto}
   .fbtn{font-size:11px;padding:3px 10px;border-radius:6px;border:1px solid var(--line);
     background:transparent;color:var(--dim);cursor:pointer;font-weight:600;transition:background .15s}
   .fbtn:hover{background:var(--card2);color:var(--ink)}
   .fbtn.active{background:var(--indigo);color:#fff;border-color:var(--indigo)}
+  .kpi-filter-bar{display:flex;align-items:center;gap:6px;margin-bottom:12px;flex-wrap:wrap}
+  .kpi-filter-label{font-size:11px;color:var(--faint);text-transform:uppercase;letter-spacing:.5px;margin-right:2px}
+  .kfi-sep{color:var(--line);font-size:14px;margin:0 4px}
+  .kfi-date{font-size:12px;color:var(--ink);background:var(--card);border:1px solid var(--line);
+    border-radius:8px;padding:4px 8px;cursor:pointer}
+  .kfi-date:focus{outline:2px solid var(--indigo);border-color:var(--indigo)}
+  .nl-row{display:flex;align-items:center;gap:6px;margin-bottom:8px;flex-wrap:wrap}
+  .nl-input{font-size:12px;color:var(--ink);background:var(--card);border:1px solid var(--line);
+    border-radius:8px;padding:5px 10px;flex:1;min-width:260px}
+  .nl-input:focus{outline:2px solid var(--indigo);border-color:var(--indigo)}
+  .nl-input::placeholder{color:var(--faint)}
+  .nl-hint{font-size:11px;color:var(--faint);margin-left:2px}
+  .nl-parsed{font-size:11px;color:var(--ok);margin-left:4px;font-weight:600}
+  .nl-error{font-size:11px;color:var(--crit);margin-left:4px}
   @media(max-width:920px){.kpis{grid-template-columns:repeat(2,1fr)}.grid{grid-template-columns:1fr}}
 </style>
 </head>
@@ -103,11 +148,30 @@ const $ = (s,el=document)=>el.querySelector(s);
 const esc = s => String(s??"").replace(/[&<>]/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;"}[c]));
 let charts = [];
 
-Chart.defaults.color = "#9aa7c8";
-Chart.defaults.borderColor = "#233156";
+Chart.defaults.color = "#4a5578";
+Chart.defaults.borderColor = "#dde3ef";
 Chart.defaults.font.family = "Segoe UI, system-ui, sans-serif";
 
 function reload(){ $("#root").innerHTML='<div class="loading">Re-parsing logs…</div>'; load(); }
+
+/* ── Health gauge SVG ──────────────────────────────────────────── */
+function gaugesvg(score){
+  if(score==null) return "";
+  const r=28, cx=36, cy=36, stroke=6;
+  const circ = Math.PI*r; // half-circle arc length
+  const pct = Math.max(0,Math.min(100,score))/100;
+  const filled = pct*circ;
+  const color = score>=70?"#35d6a5":score>=40?"#ffcb5c":"#ff6f8b";
+  return `<svg class="ai-gauge" width="72" height="42" viewBox="0 0 72 42" aria-label="Health score ${Math.round(score)}/100">
+    <path d="M${cx-r},${cy} A${r},${r} 0 0,1 ${cx+r},${cy}"
+      fill="none" stroke="#dde3ef" stroke-width="${stroke}" stroke-linecap="round"/>
+    <path d="M${cx-r},${cy} A${r},${r} 0 0,1 ${cx+r},${cy}"
+      fill="none" stroke="${color}" stroke-width="${stroke}" stroke-linecap="round"
+      stroke-dasharray="${filled} ${circ}" style="transition:stroke-dasharray .6s ease"/>
+    <text x="${cx}" y="${cy-4}" text-anchor="middle" class="ai-gauge-score" fill="${color}">${Math.round(score)}</text>
+    <text x="${cx}" y="${cy+8}" text-anchor="middle" class="ai-gauge-label">/100</text>
+  </svg>`;
+}
 
 function render(d){
   charts.forEach(c=>c.destroy()); charts = [];
@@ -119,34 +183,74 @@ function render(d){
     return;
   }
   const k = d.kpis;
-  const stuckCls = k.stuck>0 ? "crit":"ok";
-  const termCls = k.terminal_jobs>0 ? "crit":"ok";
+  const inQueueCls = k.in_queue>0 ? "warn":"ok";
+  const termCls    = k.terminal_jobs>0 ? "crit":"ok";
+  const delCls     = k.deleted>0 ? "crit":"ok";
+  const dupCls     = k.duplicate>0 ? "warn":"ok";
+  const otherCls   = "ok";
   const qCls = k.avg_queue_min>=30 ? "crit" : k.avg_queue_min>=10 ? "warn":"ok";
   const tCls = k.avg_total_min>=30 ? "crit" : k.avg_total_min>=10 ? "warn":"ok";
 
-  const kpis = `<div class="kpis">
-    <div class="kpi"><div class="v">${k.total_tasks}</div><div class="l">Total tasks</div></div>
-    <div class="kpi ok"><div class="v">${k.completed}</div><div class="l">Completed</div></div>
-    <div class="kpi ${stuckCls}"><div class="v">${k.stuck}</div><div class="l">Stuck (${k.stuck_pct}%)</div></div>
-    <div class="kpi ${qCls}"><div class="v">${k.avg_queue_min}<small> min</small></div><div class="l">Avg queue time</div></div>
-    <div class="kpi ${tCls}"><div class="v">${k.avg_total_min}<small> min</small></div><div class="l">Avg total time</div></div>
-    <div class="kpi"><div class="v">${k.avg_proc_min}<small> min</small></div><div class="l">Avg processing</div></div>
-    <div class="kpi warn"><div class="v">${k.max_queue_min}<small> min</small></div><div class="l">Max queue time</div></div>
-    <!--<div class="kpi"><div class="v">${(d.job_breakdown||[]).length}</div><div class="l">Job types</div></div>-->
-    <div class="kpi ${termCls}"><div class="v">${k.terminal_jobs}</div><div class="l">Terminal jobs (${k.terminal_pct}%)</div></div>
+  const kpiFilterBar = `<div id="kpi-filter-bar">
+    <div class="kpi-filter-bar">
+      <span class="kpi-filter-label">Range</span>
+      <button class="fbtn active" data-krange="0"   onclick="selectKpiPreset(this)">All</button>
+      <button class="fbtn"        data-krange="1"   onclick="selectKpiPreset(this)">1D</button>
+      <button class="fbtn"        data-krange="7"   onclick="selectKpiPreset(this)">1W</button>
+      <button class="fbtn"        data-krange="30"  onclick="selectKpiPreset(this)">1M</button>
+      <button class="fbtn"        data-krange="365" onclick="selectKpiPreset(this)">1Y</button>
+      <span class="kfi-sep">|</span>
+      <span class="kpi-filter-label">From</span>
+      <input class="kfi-date" type="date" id="kfi-from" oninput="clearKpiPresets()">
+      <span class="kpi-filter-label">To</span>
+      <input class="kfi-date" type="date" id="kfi-to" oninput="clearKpiPresets()">
+      <button class="btn" onclick="applyKpiFilterUI()" style="padding:5px 16px;font-size:12px">Apply</button>
+      <span id="kpi-range-label" style="font-size:11px;color:var(--faint);margin-left:4px"></span>
+    </div>
+    <div class="nl-row">
+      <span class="kpi-filter-label">Natural language</span>
+      <input class="nl-input" id="nl-input" type="text"
+        placeholder="e.g. april 2022 · between april 1 and april 30 2022 · 2nd week of april 2022 · Q1 2023 · last 30 days"
+        oninput="nlPreview()" onkeydown="if(event.key==='Enter')nlApply()">
+      <button class="btn-ghost" onclick="nlApply()" style="font-size:12px;padding:5px 12px">Parse &amp; Apply</button>
+      <span id="nl-feedback"></span>
+    </div>
   </div>`;
+
+  const kpis = `<div id="kpis-container">${kpiFilterBar}<div id="kpi-tiles" class="kpis">
+    <div class="kpi-row-label">Task counts</div>
+    <div class="kpi"><div class="v">${k.total_tasks}</div><div class="l">Total Tasks</div></div>
+    <div class="kpi ok"><div class="v">${k.completed}</div><div class="l">Completed (${Math.round(k.completed/k.total_tasks*100)||0}%)</div></div>
+    <div class="kpi ${termCls}"><div class="v">${k.terminal_jobs}</div><div class="l">Terminal (${k.terminal_pct}%)</div></div>
+    <div class="kpi ${inQueueCls}"><div class="v">${k.in_queue}</div><div class="l">In Queue (${k.in_queue_pct}%)</div></div>
+    <div class="kpi-row-label">Other states</div>
+    <div class="kpi ${delCls}"><div class="v">${k.deleted}</div><div class="l">Deleted (${k.deleted_pct}%)</div></div>
+    <div class="kpi ${dupCls}"><div class="v">${k.duplicate}</div><div class="l">Duplicate (${k.duplicate_pct}%)</div></div>
+    <div class="kpi"><div class="v">${k.other}</div><div class="l">Other State (${k.other_pct}%)</div></div>
+    <div class="kpi" style="visibility:hidden"></div>
+    <div class="kpi-row-label">Timing averages</div>
+    <div class="kpi ${tCls}"><div class="v">${k.avg_total_min}<small> min</small></div><div class="l">Avg Completion Time</div></div>
+    <div class="kpi ${qCls}"><div class="v">${k.avg_queue_min}<small> min</small></div><div class="l">Avg Queue Time</div></div>
+    <div class="kpi"><div class="v">${k.avg_proc_min}<small> min</small></div><div class="l">Avg Processing Time</div></div>
+    <div class="kpi" style="visibility:hidden"></div>
+  </div></div>`;
 
   const aiCard = `<div class="card wide ai-card" style="margin-bottom:16px">
     <div class="ai-head">
       <h3>AI Insights <span class="sub">Bedrock-generated analysis</span></h3>
-      <div class="ai-badges" id="ai-badges"></div>
-      <button class="btn" id="ai-btn" onclick="loadAnalysis()">✦ Generate</button>
+      <div class="ai-head-right">
+        <div id="ai-gauge"></div>
+        <div id="ai-badges" style="display:flex;gap:8px"></div>
+        <button class="btn-ghost" id="ai-copy" onclick="copyAnalysis()" style="display:none">⎘ Copy</button>
+        <button class="btn" id="ai-btn" onclick="loadAnalysis()">✦ Generate</button>
+      </div>
     </div>
     <div class="ai-body-wrap">
       <div id="ai-body" class="ai-body-collapsed"><div class="ai-empty">Click "Generate" to run an AI analysis of the current statistics.</div></div>
       <button class="ai-expand-btn" id="ai-expand" onclick="toggleAiExpand()">▼ Expand</button>
     </div>
   </div>`;
+
 
   const chartCards = `<div class="grid">
     <div class="card"><h3>Task status distribution</h3><canvas id="c_status"></canvas></div>
@@ -165,7 +269,16 @@ function render(d){
   </div>`;
 
   const tableCard = `<div class="card wide" style="margin-top:16px">
-    <h3>Task detail <span class="sub"><input class="filter" id="flt" placeholder="filter by id / job / user…" oninput="filterTable()"></span></h3>
+    <h3>Task detail
+      <button class="btn-ghost" onclick="exportCsv()" style="margin-left:auto">↓ Export CSV</button>
+    </h3>
+    <div class="table-toolbar">
+      <input class="filter" id="flt" placeholder="filter by id / job / user…" oninput="filterTable()">
+      <button class="sfbtn active" data-sf="all"       onclick="setStatusFilter(this)">All</button>
+      <button class="sfbtn"        data-sf="COMPLETE"  onclick="setStatusFilter(this)">Complete</button>
+      <button class="sfbtn"        data-sf="SCHEDULED" onclick="setStatusFilter(this)">Scheduled</button>
+      <button class="sfbtn"        data-sf="TERMINAL"  onclick="setStatusFilter(this)">Terminal</button>
+    </div>
     <div class="tablewrap"><table id="tbl"><thead><tr>
       <th>Task ID</th><th>Job</th><th>User</th><th>Group</th><th>Status</th>
       <th>Queue (m)</th><th>Proc (m)</th><th>Total (m)</th><th>Initial</th><th>End</th>
@@ -174,42 +287,80 @@ function render(d){
 
   $("#root").innerHTML = kpis + aiCard + chartCards + tableCard;
   window._tasks = d.tasks;
+  window._filteredTasks = d.tasks;
+  window._statusFilter = "all";
   draw(d);
 }
 
+/* ── AI expand/collapse ────────────────────────────────────────── */
 function toggleAiExpand(){
   const body = $("#ai-body"), btn = $("#ai-expand");
   const collapsed = body.classList.toggle("ai-body-collapsed");
   btn.textContent = collapsed ? "▼ Expand" : "▲ Collapse";
 }
 
+/* ── Copy analysis to clipboard ────────────────────────────────── */
+function copyAnalysis(){
+  const text = window._lastAnalysisText||"";
+  if(!text) return;
+  navigator.clipboard.writeText(text).then(()=>{
+    const btn = $("#ai-copy");
+    btn.textContent = "✓ Copied";
+    setTimeout(()=>{ btn.textContent = "⎘ Copy"; }, 2000);
+  });
+}
+
+/* ── Load AI analysis ──────────────────────────────────────────── */
 function loadAnalysis(){
-  const btn = $("#ai-btn"), body = $("#ai-body"), badges = $("#ai-badges"), expand = $("#ai-expand");
+  const btn = $("#ai-btn"), body = $("#ai-body"), badges = $("#ai-badges"),
+        expand = $("#ai-expand"), copyBtn = $("#ai-copy"), gauge = $("#ai-gauge");
   btn.disabled = true; btn.textContent = "Analyzing…";
   badges.innerHTML = "";
+  gauge.innerHTML = "";
+  copyBtn.style.display = "none";
   body.classList.add("ai-body-collapsed");
   expand.textContent = "▼ Expand";
   body.innerHTML = '<div class="ai-empty">Running LangGraph analysis via Bedrock… this can take a few seconds.</div>';
-  fetch("/api/analysis").then(r=>r.json()).then(a=>{
+
+  // Build URL with active date filter so AI analyses the same window shown on the dashboard.
+  const params = new URLSearchParams();
+  const activePreset = document.querySelector("#kpi-filter-bar .fbtn.active");
+  if(activePreset){
+    const days = parseInt(activePreset.dataset.krange, 10);
+    if(days > 0){
+      const from = new Date(Date.now() - days*24*60*60*1000);
+      params.set("from", from.toISOString().slice(0,10));
+    }
+  } else {
+    const from = $("#kfi-from")?.value, to = $("#kfi-to")?.value;
+    if(from) params.set("from", from);
+    if(to)   params.set("to",   to);
+  }
+  const url = "/api/analysis" + (params.toString() ? "?"+params : "");
+
+  fetch(url).then(r=>r.json()).then(a=>{
     btn.disabled = false; btn.textContent = "↻ Regenerate";
-    renderAnalysis(a, badges, body);
+    renderAnalysis(a, badges, body, gauge, copyBtn);
   }).catch(e=>{
     btn.disabled = false; btn.textContent = "✦ Generate";
     body.innerHTML = `<div class="ai-error">Failed to load AI analysis: ${esc(e)}</div>`;
   });
 }
 
-function renderAnalysis(a, badges, body){
+/* ── Render analysis result ────────────────────────────────────── */
+function renderAnalysis(a, badges, body, gauge, copyBtn){
   if(a.status === "error"){
     badges.innerHTML = "";
     body.innerHTML = `<div class="ai-error">${esc(a.error||"Analysis failed.")}</div>`;
     return;
   }
 
+  /* gauge replaces text badge */
+  gauge.innerHTML = gaugesvg(a.health_score);
+
   const pct = v => v==null ? "—" : Math.round(v*100)+"%";
   badges.innerHTML = `
     <span class="badge">confidence ${pct(a.confidence)}</span>
-    ${a.health_score!=null ? `<span class="badge">health ${Math.round(a.health_score)}/100</span>` : ""}
     ${a.status==="partial" ? `<span class="badge" style="color:var(--warn);border-color:var(--warn)">partial</span>` : ""}
   `;
 
@@ -227,40 +378,109 @@ function renderAnalysis(a, badges, body){
     </div><div class="ai-item-desc">${esc(x.description)}</div></li>`).join("")}</ul>`
     : '<div class="ai-empty">No recommendations.</div>';
 
+  const reasoningHtml = a.reasoning ? `
+    <button class="ai-reasoning-toggle" onclick="toggleReasoning(this)">▶ How this was derived</button>
+    <div class="ai-reasoning" style="display:none">${esc(a.reasoning)}</div>` : "";
+
   body.innerHTML = `
     <div class="ai-summary">${esc(a.executive_summary)}</div>
+    ${a.health_assessment ? `<div class="ai-assessment">${esc(a.health_assessment)}</div>` : ""}
     <div class="ai-section"><h4>Detected anomalies</h4>${anomalyList}</div>
     <div class="ai-section"><h4>Recommendations</h4>${recList}</div>
-    <div class="ai-section"><h4>Detailed analysis</h4><div class="ai-analysis">${esc(a.detailed_analysis)}</div></div>
+    ${reasoningHtml ? `<div class="ai-section">${reasoningHtml}</div>` : ""}
     ${a.error ? `<div class="ai-section ai-error">${esc(a.error)}</div>` : ""}
   `;
+
+  /* build plain-text copy payload */
+  window._lastAnalysisText = [
+    "=== AI Insights — Dispatcher Analysis ===",
+    "",
+    a.executive_summary||"",
+    a.health_assessment ? "\nHealth Assessment\n"+a.health_assessment : "",
+    a.health_score!=null ? `\nHealth Score: ${Math.round(a.health_score)}/100` : "",
+    `Confidence: ${pct(a.confidence)}`,
+    "",
+    "--- Anomalies ---",
+    ...(a.anomalies||[]).map(x=>`[${x.severity.toUpperCase()}] ${x.title}: ${x.description}`),
+    "",
+    "--- Recommendations ---",
+    ...(a.recommendations||[]).map(x=>`[${x.priority.toUpperCase()}] ${x.title}: ${x.description}`),
+    a.reasoning ? "\n--- Reasoning ---\n"+a.reasoning : "",
+  ].join("\n");
+  copyBtn.style.display = "";
 }
 
+/* ── Reasoning toggle ──────────────────────────────────────────── */
+function toggleReasoning(btn){
+  const box = btn.nextElementSibling;
+  const hidden = box.style.display==="none";
+  box.style.display = hidden?"block":"none";
+  btn.textContent = (hidden?"▼":"▶") + " How this was derived";
+}
+
+/* ── Task table helpers ────────────────────────────────────────── */
+function statusCls(s){
+  if(s==="COMPLETE") return "ok";
+  if(s==="TERMINAL"||s==="DELETE") return "stuck";  // red — actually failed/deleted
+  if(s==="SCHEDULED"||s==="PREPARING"||s==="TRANSLATING"||s==="LOADING") return "warn";
+  return ""; // INITIAL, DUPLICATE, UNKNOWN — no colour
+}
 function taskRows(tasks){
   return (tasks||[]).map(t=>`<tr>
     <td class="mono">${esc(t.task_id)}</td><td>${esc(t.job)}</td><td>${esc(t.user)}</td>
     <td>${esc(t.group)}</td>
-    <td><span class="tag ${t.completed?'ok':'stuck'}">${esc(t.status)}</span></td>
+    <td><span class="tag ${statusCls(t.status)}">${esc(t.status)}</span></td>
     <td class="mono">${t.queue_min??''}</td><td class="mono">${t.proc_min??''}</td>
     <td class="mono">${t.total_min??''}</td>
     <td class="mono">${esc(t.initial)}</td><td class="mono">${esc(t.end_time)}</td>
   </tr>`).join("");
 }
-function filterTable(){
-  const q = $("#flt").value.toLowerCase();
-  const rows = (window._tasks||[]).filter(t=>
-    (t.task_id+t.job+t.user+t.group+t.status).toLowerCase().includes(q));
+
+function applyTableFilters(){
+  const q = ($("#flt")||{value:""}).value.toLowerCase();
+  const sf = window._statusFilter||"all";
+  const base = window._filteredTasks || window._tasks || [];
+  const rows = base.filter(t=>{
+    const textMatch = (t.task_id+t.job+t.user+t.group+t.status).toLowerCase().includes(q);
+    const statusMatch = sf==="all" || t.status===sf;
+    return textMatch && statusMatch;
+  });
   $("#tbl tbody").innerHTML = taskRows(rows);
 }
 
+function filterTable(){ applyTableFilters(); }
+
+function setStatusFilter(btn){
+  document.querySelectorAll(".sfbtn").forEach(b=>b.classList.remove("active"));
+  btn.classList.add("active");
+  window._statusFilter = btn.dataset.sf;
+  applyTableFilters();
+}
+
+/* ── CSV export ────────────────────────────────────────────────── */
+function exportCsv(){
+  const tasks = window._filteredTasks || window._tasks || [];
+  if(!tasks.length) return;
+  const header = ["Task ID","Job","User","Group","Status","Queue (m)","Proc (m)","Total (m)","Initial","End"];
+  const rows = tasks.map(t=>[t.task_id,t.job,t.user,t.group,t.status,
+    t.queue_min??"",t.proc_min??"",t.total_min??"",t.initial??"",t.end_time??""
+  ].map(v=>`"${String(v??"").replace(/"/g,'""')}"`).join(","));
+  const csv = [header.join(","), ...rows].join("\r\n");
+  const a = document.createElement("a");
+  a.href = URL.createObjectURL(new Blob([csv],{type:"text/csv"}));
+  a.download = "dispatcher_tasks.csv";
+  a.click();
+  URL.revokeObjectURL(a.href);
+}
+
+/* ── Charts ────────────────────────────────────────────────────── */
 function draw(d){
   const A="#7c8cff", C="#35d0d6", W="#ffcb5c", K="#ff6f8b", G="#8be36b", P="#b58bff";
   const palette=[A,C,W,K,G,P,"#5f6d92","#35d6a5","#ff9f6b","#6bb6ff"];
   const bare={plugins:{legend:{display:false}},responsive:true,
-    scales:{y:{beginAtZero:true,grid:{color:"#1a2340"}},x:{grid:{display:false}}}};
-  // horizontal bars: value axis is X, category axis is Y
+    scales:{y:{beginAtZero:true,grid:{color:"#dde3ef"}},x:{grid:{display:false}}}};
   const bareH={plugins:{legend:{display:false}},responsive:true,indexAxis:"y",
-    scales:{x:{beginAtZero:true,grid:{color:"#1a2340"}},y:{grid:{display:false}}}};
+    scales:{x:{beginAtZero:true,grid:{color:"#dde3ef"}},y:{grid:{display:false}}}};
   const mk=(id,cfg)=>charts.push(new Chart($("#"+id),cfg));
 
   const sd=d.status_distribution||[];
@@ -278,7 +498,7 @@ function draw(d){
       {type:"bar",label:"Task count",data:jb.map(j=>j.count),backgroundColor:A,yAxisID:"y"},
       {type:"line",label:"Avg total (min)",data:jb.map(j=>j.avg_total),borderColor:C,backgroundColor:C,yAxisID:"y1",tension:.3}]},
     options:{responsive:true,plugins:{legend:{position:"top"}},
-      scales:{y:{beginAtZero:true,position:"left",grid:{color:"#1a2340"}},
+      scales:{y:{beginAtZero:true,position:"left",grid:{color:"#dde3ef"}},
               y1:{beginAtZero:true,position:"right",grid:{display:false}},x:{grid:{display:false}}}}});
 
   const gd=d.group_distribution||[];
@@ -298,8 +518,7 @@ function draw(d){
 function drawThru(slice){
   const C="#35d0d6";
   const bare={plugins:{legend:{display:false}},responsive:true,
-    scales:{y:{beginAtZero:true,grid:{color:"#1a2340"}},x:{grid:{display:false}}}};
-  // destroy existing throughput chart if any
+    scales:{y:{beginAtZero:true,grid:{color:"#dde3ef"}},x:{grid:{display:false}}}};
   const idx = charts.findIndex(c=>c.canvas.id==="c_thru");
   if(idx!==-1){charts[idx].destroy();charts.splice(idx,1);}
   charts.push(new Chart($("#c_thru"),{type:"line",data:{labels:slice.map(t=>t.t),
@@ -308,15 +527,340 @@ function drawThru(slice){
 }
 
 function setThruRange(btn){
-  document.querySelectorAll(".fbtn").forEach(b=>b.classList.remove("active"));
+  document.querySelectorAll(".thru-filters .fbtn").forEach(b=>b.classList.remove("active"));
   btn.classList.add("active");
   const days = parseInt(btn.dataset.days,10);
-  const all = window._thruAll||[];
+  const all = window._thruFiltered||window._thruAll||[];
   if(!days||!all.length){drawThru(all);return;}
   const cutoff = new Date(Date.now() - days*24*60*60*1000);
   const fmt = d=>`${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,"0")}-${String(d.getDate()).padStart(2,"0")}`;
-  const cutStr = fmt(cutoff);
-  drawThru(all.filter(t=>t.t>=cutStr));
+  drawThru(all.filter(t=>t.t>=fmt(cutoff)));
+}
+
+/* ── KPI range filter ──────────────────────────────────────────── */
+function selectKpiPreset(btn){
+  document.querySelectorAll("#kpi-filter-bar .fbtn").forEach(b=>b.classList.remove("active"));
+  btn.classList.add("active");
+  const fi = $("#kfi-from"), ti = $("#kfi-to");
+  if(fi) fi.value = "";
+  if(ti) ti.value = "";
+}
+
+function clearKpiPresets(){
+  document.querySelectorAll("#kpi-filter-bar .fbtn").forEach(b=>b.classList.remove("active"));
+}
+
+/* ── Natural-language date parsing ─────────────────────────────── */
+const MONTHS = {january:0,february:1,march:2,april:3,may:4,june:5,
+  july:6,august:7,september:8,october:9,november:10,december:11,
+  jan:0,feb:1,mar:2,apr:3,jun:5,jul:6,aug:7,sep:8,oct:9,nov:10,dec:11};
+
+function fmtDate(d){
+  return `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,"0")}-${String(d.getDate()).padStart(2,"0")}`;
+}
+
+function parseNL(raw){
+  const txt = (raw||"").trim().toLowerCase();
+  if(!txt) return null;
+
+  // "Nth week of <month> <year>"  e.g. "2nd week of april 2022"
+  let m = txt.match(/(\d+)(?:st|nd|rd|th)?\s+week\s+of\s+([a-z]+)\s+(\d{4})/);
+  if(m){
+    const week=parseInt(m[1]), mo=MONTHS[m[2]], yr=parseInt(m[3]);
+    if(mo==null||isNaN(yr)||week<1||week>5) return {error:`Can't parse "${raw}"`};
+    const firstDay = new Date(yr, mo, 1);
+    const startOffset = (week-1)*7;
+    const from = new Date(yr, mo, 1 + startOffset);
+    const to   = new Date(yr, mo, 1 + startOffset + 6);
+    // clamp to month boundaries
+    const monthEnd = new Date(yr, mo+1, 0);
+    if(from > monthEnd) return {error:`Week ${week} doesn't exist in that month`};
+    return {from: fmtDate(from), to: fmtDate(to > monthEnd ? monthEnd : to)};
+  }
+
+  // "Q<n> <year>"  e.g. "Q1 2023"
+  m = txt.match(/q([1-4])\s+(\d{4})/);
+  if(m){
+    const q=parseInt(m[1])-1, yr=parseInt(m[2]);
+    const from = new Date(yr, q*3, 1);
+    const to   = new Date(yr, q*3+3, 0);
+    return {from: fmtDate(from), to: fmtDate(to)};
+  }
+
+  // "<year> only"  e.g. "2023"
+  m = txt.match(/^(\d{4})$/);
+  if(m){
+    const yr=parseInt(m[1]);
+    return {from:`${yr}-01-01`, to:`${yr}-12-31`};
+  }
+
+  // "<month> <year>"  e.g. "april 2022"
+  m = txt.match(/^([a-z]+)\s+(\d{4})$/);
+  if(m && MONTHS[m[1]]!=null){
+    const mo=MONTHS[m[1]], yr=parseInt(m[2]);
+    const from = new Date(yr, mo, 1);
+    const to   = new Date(yr, mo+1, 0);
+    return {from: fmtDate(from), to: fmtDate(to)};
+  }
+
+  // "last N days/weeks/months"
+  m = txt.match(/last\s+(\d+)\s+(day|days|week|weeks|month|months)/);
+  if(m){
+    const n=parseInt(m[1]), unit=m[2];
+    const to = new Date(); to.setHours(23,59,59);
+    const from = new Date();
+    if(unit.startsWith("day"))   from.setDate(from.getDate()-n);
+    if(unit.startsWith("week"))  from.setDate(from.getDate()-n*7);
+    if(unit.startsWith("month")) from.setMonth(from.getMonth()-n);
+    return {from: fmtDate(from), to: fmtDate(to)};
+  }
+
+  // Fall back to chrono-node for everything else
+  // ("between X and Y", "from X to Y", plain date ranges, etc.)
+  if(typeof chrono === "undefined") return {error:"Date parser not loaded yet"};
+  const results = chrono.parse(raw);
+  if(!results.length) return {error:`Could not understand "${raw}"`};
+
+  if(results.length >= 2){
+    // Two separate dates parsed → use as from/to
+    const d1 = results[0].start.date(), d2 = results[1].start.date();
+    const [lo,hi] = d1<=d2 ? [d1,d2] : [d2,d1];
+    return {from: fmtDate(lo), to: fmtDate(hi)};
+  }
+
+  const r = results[0];
+  if(r.end){
+    // Single result with an explicit end (e.g. "april 1 to april 30 2022")
+    return {from: fmtDate(r.start.date()), to: fmtDate(r.end.date())};
+  }
+
+  // Single point — treat as full day
+  const d = r.start.date();
+  return {from: fmtDate(d), to: fmtDate(d)};
+}
+
+function nlPreview(){
+  const fb = $("#nl-feedback");
+  const txt = ($("#nl-input")||{}).value||"";
+  if(!txt.trim()){ fb.innerHTML=""; return; }
+  const res = parseNL(txt);
+  if(!res)         { fb.innerHTML=""; return; }
+  if(res.error)    { fb.innerHTML=`<span class="nl-error">${esc(res.error)}</span>`; return; }
+  fb.innerHTML=`<span class="nl-parsed">→ ${res.from} to ${res.to}</span>`;
+}
+
+function nlApply(){
+  const txt = ($("#nl-input")||{}).value||"";
+  if(!txt.trim()) return;
+  const res = parseNL(txt);
+  if(!res||res.error){
+    const fb=$("#nl-feedback");
+    if(fb) fb.innerHTML=`<span class="nl-error">${esc((res&&res.error)||`Could not understand "${txt}"`)}</span>`;
+    return;
+  }
+  // Fill date pickers and clear presets
+  const fi=$("#kfi-from"), ti=$("#kfi-to");
+  if(fi) fi.value = res.from;
+  if(ti) ti.value = res.to;
+  clearKpiPresets();
+  // Trigger Apply
+  applyKpiFilter(
+    new Date(res.from+"T00:00:00"),
+    new Date(res.to  +"T23:59:59"),
+    `${res.from} → ${res.to}`
+  );
+  const lbl=$("#kpi-range-label");
+  if(lbl) lbl.textContent=`(${res.from} → ${res.to})`;
+}
+
+function applyKpiFilterUI(){
+  const activePreset = document.querySelector("#kpi-filter-bar .fbtn.active");
+  const from = $("#kfi-from")?.value, to = $("#kfi-to")?.value;
+
+  if(activePreset){
+    const days = parseInt(activePreset.dataset.krange, 10);
+    const cutoff = days ? new Date(Date.now() - days*24*60*60*1000) : null;
+    applyKpiFilter(cutoff, null, days===0 ? "All time" : activePreset.textContent);
+  } else {
+    const cutoffFrom = from ? new Date(from+"T00:00:00") : null;
+    const cutoffTo   = to   ? new Date(to  +"T23:59:59") : null;
+    const label = from && to ? `${from} → ${to}` : from ? `from ${from}` : to ? `until ${to}` : "All time";
+    applyKpiFilter(cutoffFrom, cutoffTo, label);
+  }
+}
+
+function taskDate(t){
+  const raw = t.initial || t.end_time || "";
+  if(!raw) return null;
+  const d = new Date(raw);
+  return isNaN(d) ? null : d;
+}
+
+function avg(arr){ return arr.length ? Math.round(arr.reduce((s,v)=>s+v,0)/arr.length) : 0; }
+
+function applyKpiFilter(from, to, label){
+  const all = window._tasks || [];
+  const sub = all.filter(t=>{
+    const d = taskDate(t);
+    if(!d) return !from;
+    if(from && d < from) return false;
+    if(to   && d > to  ) return false;
+    return true;
+  });
+  window._filteredTasks = sub;
+
+  /* ── KPI tiles ── */
+  const total      = sub.length;
+  const completed  = sub.filter(t=>t.end_state==="COMPLETE").length;
+  const inQueue    = sub.filter(t=>t.status==="SCHEDULED").length;
+  const termJobs   = sub.filter(t=>t.end_state==="TERMINAL").length;
+  const deleted    = sub.filter(t=>t.end_state==="DELETE").length;
+  const duplicate  = sub.filter(t=>t.end_state==="DUPLICATE").length;
+  const qTimes   = sub.map(t=>t.queue_min).filter(v=>v!=null);
+  const pTimes   = sub.map(t=>t.proc_min ).filter(v=>v!=null);
+  const tTimes   = sub.filter(t=>t.end_state==="COMPLETE").map(t=>t.total_min).filter(v=>v!=null);
+  const maxQ     = qTimes.length ? Math.max(...qTimes) : 0;
+  const avgQ = avg(qTimes), avgP = avg(pTimes), avgT = avg(tTimes);
+  const inQueuePct  = total ? Math.round(inQueue/total*100)   : 0;
+  const termPct     = total ? Math.round(termJobs/total*100)  : 0;
+  const deletedPct  = total ? Math.round(deleted/total*100)   : 0;
+  const duplicatePct= total ? Math.round(duplicate/total*100) : 0;
+  const inQueueCls  = inQueue>0?"warn":"ok";
+  const termCls     = termJobs>0?"crit":"ok";
+  const delCls      = deleted>0?"crit":"ok";
+  const dupCls      = duplicate>0?"warn":"ok";
+  const qCls=avgQ>=30?"crit":avgQ>=10?"warn":"ok";
+  const tCls=avgT>=30?"crit":avgT>=10?"warn":"ok";
+
+  const lbl = $("#kpi-range-label");
+  if(lbl) lbl.textContent = label ? `(${label})` : "";
+
+  const otherCount = sub.filter(t=>["INITIAL","PREPARING","TRANSLATING","LOADING"].includes(t.status)).length;
+  const otherPct   = total ? Math.round(otherCount/total*100) : 0;
+  const completedPct = total ? Math.round(completed/total*100) : 0;
+
+  const tiles = $("#kpi-tiles");
+  if(tiles) tiles.innerHTML = `
+    <div class="kpi-row-label">Task counts</div>
+    <div class="kpi"><div class="v">${total}</div><div class="l">Total Tasks</div></div>
+    <div class="kpi ok"><div class="v">${completed}</div><div class="l">Completed (${completedPct}%)</div></div>
+    <div class="kpi ${termCls}"><div class="v">${termJobs}</div><div class="l">Terminal (${termPct}%)</div></div>
+    <div class="kpi ${inQueueCls}"><div class="v">${inQueue}</div><div class="l">In Queue (${inQueuePct}%)</div></div>
+    <div class="kpi-row-label">Other states</div>
+    <div class="kpi ${delCls}"><div class="v">${deleted}</div><div class="l">Deleted (${deletedPct}%)</div></div>
+    <div class="kpi ${dupCls}"><div class="v">${duplicate}</div><div class="l">Duplicate (${duplicatePct}%)</div></div>
+    <div class="kpi"><div class="v">${otherCount}</div><div class="l">Other State (${otherPct}%)</div></div>
+    <div class="kpi" style="visibility:hidden"></div>
+    <div class="kpi-row-label">Timing averages</div>
+    <div class="kpi ${tCls}"><div class="v">${avgT}<small> min</small></div><div class="l">Avg Completion Time</div></div>
+    <div class="kpi ${qCls}"><div class="v">${avgQ}<small> min</small></div><div class="l">Avg Queue Time</div></div>
+    <div class="kpi"><div class="v">${avgP}<small> min</small></div><div class="l">Avg Processing Time</div></div>
+    <div class="kpi" style="visibility:hidden"></div>
+  `;
+
+  /* ── Recompute chart data from sub ── */
+  const A="#7c8cff", C="#35d0d6", W="#ffcb5c", K="#ff6f8b", G="#8be36b", P="#b58bff";
+  const palette=[A,C,W,K,G,P,"#5f6d92","#35d6a5","#ff9f6b","#6bb6ff"];
+
+  // status distribution
+  const statusCount={};
+  sub.forEach(t=>{ statusCount[t.status]=(statusCount[t.status]||0)+1; });
+  const sdLabels=Object.keys(statusCount), sdVals=sdLabels.map(s=>statusCount[s]);
+
+  // queue distribution (same buckets as server)
+  const qBuckets={"0-5":0,"5-15":0,"15-30":0,"30-60":0,">60":0};
+  sub.forEach(t=>{
+    const v=t.queue_min; if(v==null) return;
+    if(v<=5) qBuckets["0-5"]++;
+    else if(v<=15) qBuckets["5-15"]++;
+    else if(v<=30) qBuckets["15-30"]++;
+    else if(v<=60) qBuckets["30-60"]++;
+    else qBuckets[">60"]++;
+  });
+  const qdLabels=Object.keys(qBuckets), qdVals=qdLabels.map(k=>qBuckets[k]);
+  const qdColors=qdLabels.map(r=>r===">60"?K:r==="30-60"?W:A);
+
+  // job breakdown
+  const jobMap={};
+  sub.forEach(t=>{
+    if(!jobMap[t.job]) jobMap[t.job]={count:0,totals:[]};
+    jobMap[t.job].count++;
+    if(t.end_state==="COMPLETE" && t.total_min!=null) jobMap[t.job].totals.push(t.total_min);
+  });
+  const jbEntries=Object.entries(jobMap).sort((a,b)=>b[1].count-a[1].count);
+  const jbLabels=jbEntries.map(([j])=>j);
+  const jbCounts=jbEntries.map(([,v])=>v.count);
+  const jbAvg=jbEntries.map(([,v])=>v.totals.length?Math.round(v.totals.reduce((s,x)=>s+x,0)/v.totals.length):0);
+
+  // group distribution
+  const grpMap={};
+  sub.forEach(t=>{ grpMap[t.group]=(grpMap[t.group]||0)+1; });
+  const gdEntries=Object.entries(grpMap).sort((a,b)=>b[1]-a[1]);
+
+  // user distribution
+  const usrMap={};
+  sub.forEach(t=>{ usrMap[t.user]=(usrMap[t.user]||0)+1; });
+  const udEntries=Object.entries(usrMap).sort((a,b)=>b[1]-a[1]).slice(0,15);
+
+  // throughput (completions per minute bucket)
+  const thruMap={};
+  sub.filter(t=>t.status==="COMPLETE"&&t.end_time).forEach(t=>{
+    const dt=new Date(t.end_time); if(isNaN(dt)) return;
+    const key=`${dt.getFullYear()}-${String(dt.getMonth()+1).padStart(2,"0")}-${String(dt.getDate()).padStart(2,"0")} `+
+              `${String(dt.getHours()).padStart(2,"0")}:${String(dt.getMinutes()).padStart(2,"0")}`;
+    thruMap[key]=(thruMap[key]||0)+1;
+  });
+  const thruSlice=Object.entries(thruMap).sort((a,b)=>a[0]<b[0]?-1:1).map(([t,count])=>({t,count}));
+  window._thruFiltered = thruSlice;
+
+  /* ── Redraw charts ── */
+  const bare={plugins:{legend:{display:false}},responsive:true,
+    scales:{y:{beginAtZero:true,grid:{color:"#dde3ef"}},x:{grid:{display:false}}}};
+  const bareH={plugins:{legend:{display:false}},responsive:true,indexAxis:"y",
+    scales:{x:{beginAtZero:true,grid:{color:"#dde3ef"}},y:{grid:{display:false}}}};
+
+  // Single-pass destroy+remove: c.canvas goes null after destroy() in Chart.js 4,
+  // so we must not read c.canvas after the destroy call.
+  const chartIdSet = new Set(["c_status","c_queue","c_jobs","c_group","c_user"]);
+  charts = charts.filter(c => {
+    if (c.canvas && chartIdSet.has(c.canvas.id)) { c.destroy(); return false; }
+    return true;
+  });
+
+  // Replace canvas nodes so Chart.js internal registry has no stale reference.
+  const mk=(id,cfg)=>{
+    const old=$("#"+id); if(!old) return;
+    const fresh=document.createElement("canvas"); fresh.id=id;
+    old.parentNode.replaceChild(fresh,old);
+    charts.push(new Chart(fresh,cfg));
+  };
+
+  mk("c_status",{type:"doughnut",data:{labels:sdLabels,
+    datasets:[{data:sdVals,backgroundColor:palette}]},
+    options:{plugins:{legend:{position:"right"}}}});
+
+  mk("c_queue",{type:"bar",data:{labels:qdLabels.map(r=>r+" min"),
+    datasets:[{data:qdVals,backgroundColor:qdColors}]},options:bare});
+
+  mk("c_jobs",{data:{labels:jbLabels,datasets:[
+    {type:"bar",label:"Task count",data:jbCounts,backgroundColor:A,yAxisID:"y"},
+    {type:"line",label:"Avg total (min)",data:jbAvg,borderColor:C,backgroundColor:C,yAxisID:"y1",tension:.3}]},
+    options:{responsive:true,plugins:{legend:{position:"top"}},
+      scales:{y:{beginAtZero:true,position:"left",grid:{color:"#dde3ef"}},
+              y1:{beginAtZero:true,position:"right",grid:{display:false}},x:{grid:{display:false}}}}});
+
+  mk("c_group",{type:"bar",data:{labels:gdEntries.map(([g])=>g),
+    datasets:[{data:gdEntries.map(([,v])=>v),backgroundColor:P}]},options:bareH});
+
+  mk("c_user",{type:"bar",data:{labels:udEntries.map(([u])=>u),
+    datasets:[{data:udEntries.map(([,v])=>v),backgroundColor:G}]},options:bareH});
+
+  // reset throughput sub-range to "All" within filtered window
+  document.querySelectorAll(".thru-filters .fbtn").forEach(b=>b.classList.toggle("active",b.dataset.days==="0"));
+  drawThru(thruSlice);
+
+  /* ── Redraw table ── */
+  applyTableFilters();
 }
 
 function load(){

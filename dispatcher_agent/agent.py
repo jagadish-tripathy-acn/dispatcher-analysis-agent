@@ -39,20 +39,15 @@ SYSTEM_PROMPT = (
     "jobs, users, or timestamps. If something needed is missing, say so instead of guessing. "
     "Respond only via the requested structured schema, no extra text.\n\n"
     "Produce, in this single response:\n"
-    "1. detailed_analysis: a multi-paragraph technical analysis covering throughput, "
-    "queue/processing latency, failure and stuck-task rates, and load concentration across "
-    "jobs/groups/users.\n"
-    "2. health_assessment: a concise statement of overall system health.\n"
-    "3. anomalies: notable deviations or warning signs worth investigating, each with a severity.\n"
-    "4. recommendations: 3-6 concrete, prioritized actions, each traceable to the analysis or an "
-    "anomaly above.\n"
-    "5. executive_summary: STRICT LIMIT of 1-2 short sentences (max ~40 words total). A "
+    "1. health_assessment: a single concise sentence on overall system health.\n"
+    "2. anomalies: notable deviations or warning signs worth investigating, each with a severity.\n"
+    "3. recommendations: 3-5 concrete, prioritized actions, each traceable to an anomaly.\n"
+    "4. executive_summary: STRICT LIMIT of 1-2 short sentences (max ~40 words total). A "
     "plain-language headline naming the overall health and, if unhealthy, only the single "
-    "biggest issue. Do not enumerate metrics, anomalies, or recommendations here -- that detail "
-    "belongs in detailed_analysis/anomalies/recommendations, not the summary.\n"
-    "6. reasoning: 2-4 sentences on how you reached these conclusions.\n"
-    "7. confidence: 0.0-1.0 based on how complete the input data was.\n"
-    "8. health_score: 0.0-100.0 overall score, or null if the sample size is too small to be "
+    "biggest issue. Do not enumerate metrics, anomalies, or recommendations here.\n"
+    "5. reasoning: 1-2 sentences on how you reached these conclusions.\n"
+    "6. confidence: 0.0-1.0 based on how complete the input data was.\n"
+    "7. health_score: 0.0-100.0 overall score, or null if the sample size is too small to be "
     "told sufficient below."
 )
 
@@ -75,7 +70,6 @@ class Recommendation(BaseModel):
 class AnalysisResult(BaseModel):
     """Everything the single Bedrock call produces, in one combined schema."""
 
-    detailed_analysis: str
     health_assessment: str
     anomalies: List[Anomaly] = Field(default_factory=list)
     recommendations: List[Recommendation] = Field(default_factory=list)
@@ -90,7 +84,6 @@ class AnalysisResponse(BaseModel):
 
     status: Literal["success", "partial", "error"] = "success"
     executive_summary: str = ""
-    detailed_analysis: str = ""
     health_assessment: str = ""
     anomalies: List[Anomaly] = Field(default_factory=list)
     recommendations: List[Recommendation] = Field(default_factory=list)
@@ -176,7 +169,6 @@ class DispatcherGraph:
             "response": AnalysisResponse(
                 status="success",
                 executive_summary=result.executive_summary,
-                detailed_analysis=result.detailed_analysis,
                 health_assessment=result.health_assessment,
                 anomalies=result.anomalies,
                 recommendations=result.recommendations,
@@ -207,7 +199,7 @@ class DispatcherGraph:
         lines = [
             f"Total tasks: {k.get('total_tasks', 0)}",
             f"Completed: {k.get('completed', 0)}",
-            f"Stuck: {k.get('stuck', 0)} ({k.get('stuck_pct', 0)}%)",
+            f"In Queue (awaiting translation): {k.get('in_queue', 0)} ({k.get('in_queue_pct', 0)}%)",
             f"Terminal/failed: {k.get('terminal_jobs', 0)} ({k.get('terminal_pct', 0)}%)",
             f"Avg queue time: {k.get('avg_queue_min', 0)} min (max {k.get('max_queue_min', 0)} min)",
             f"Avg processing time: {k.get('avg_proc_min', 0)} min",
@@ -219,7 +211,7 @@ class DispatcherGraph:
                 "Job breakdown: "
                 + "; ".join(f"{j.get('job')} (count={j.get('count')}, avg_total={j.get('avg_total')}m)" for j in jobs[:10])
             )
-        stuck = stats.get("stuck_tasks") or []
+        stuck = stats.get("in_queue_tasks") or []
         if stuck:
             lines.append(
                 f"Stuck tasks ({len(stuck)} total, sample): "

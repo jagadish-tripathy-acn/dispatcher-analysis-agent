@@ -11,7 +11,7 @@ Run:  python app.py   ->  http://127.0.0.1:5710/
 import logging
 from datetime import datetime
 
-from flask import Flask, jsonify, render_template
+from flask import Flask, jsonify, render_template, request
 
 import parser
 from agent import DispatcherGraph
@@ -53,8 +53,14 @@ def api_analysis():
     DispatcherGraph LangGraph workflow. Kept as a separate, on-demand route
     from /api/stats so a slow/unavailable LLM never blocks the dashboard's
     core charts.
+
+    Optional query params:
+      from=YYYY-MM-DD  — include only tasks on/after this date
+      to=YYYY-MM-DD    — include only tasks on/before this date
     """
-    stats = parser.analyse()
+    date_from = request.args.get("from") or None
+    date_to   = request.args.get("to")   or None
+    stats = parser.analyse(date_from=date_from, date_to=date_to)
     try:
         response = _get_analysis_graph().invoke(stats)
     except Exception:
