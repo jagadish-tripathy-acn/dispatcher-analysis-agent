@@ -68,6 +68,14 @@
   .ai-item .ai-item-desc{font-size:12px;color:var(--dim);line-height:1.5}
   .ai-empty{font-size:12px;color:var(--faint)}
   .ai-error{font-size:12.5px;color:var(--crit)}
+  .ai-body-wrap{position:relative}
+  .ai-body-collapsed{max-height:110px;overflow:hidden}
+  .ai-body-collapsed::after{content:"";position:absolute;bottom:0;left:0;right:0;height:48px;
+    background:linear-gradient(transparent,var(--card));pointer-events:none}
+  .ai-expand-btn{display:block;width:100%;margin-top:8px;font-size:11.5px;font-weight:600;
+    color:var(--dim);background:transparent;border:1px solid var(--line);border-radius:8px;
+    padding:5px 0;cursor:pointer;transition:background .15s,color .15s}
+  .ai-expand-btn:hover{background:var(--card2);color:var(--ink)}
   .filter{font-size:12px;color:var(--dim);background:var(--card2);border:1px solid var(--line);border-radius:8px;padding:6px 10px}
   .loading{text-align:center;color:var(--faint);padding:60px}
   .thru-filters{display:flex;gap:5px;margin-left:auto}
@@ -134,7 +142,10 @@ function render(d){
       <div class="ai-badges" id="ai-badges"></div>
       <button class="btn" id="ai-btn" onclick="loadAnalysis()">✦ Generate</button>
     </div>
-    <div id="ai-body"><div class="ai-empty">Click "Generate" to run an AI analysis of the current statistics.</div></div>
+    <div class="ai-body-wrap">
+      <div id="ai-body" class="ai-body-collapsed"><div class="ai-empty">Click "Generate" to run an AI analysis of the current statistics.</div></div>
+      <button class="ai-expand-btn" id="ai-expand" onclick="toggleAiExpand()">▼ Expand</button>
+    </div>
   </div>`;
 
   const chartCards = `<div class="grid">
@@ -166,10 +177,18 @@ function render(d){
   draw(d);
 }
 
+function toggleAiExpand(){
+  const body = $("#ai-body"), btn = $("#ai-expand");
+  const collapsed = body.classList.toggle("ai-body-collapsed");
+  btn.textContent = collapsed ? "▼ Expand" : "▲ Collapse";
+}
+
 function loadAnalysis(){
-  const btn = $("#ai-btn"), body = $("#ai-body"), badges = $("#ai-badges");
+  const btn = $("#ai-btn"), body = $("#ai-body"), badges = $("#ai-badges"), expand = $("#ai-expand");
   btn.disabled = true; btn.textContent = "Analyzing…";
   badges.innerHTML = "";
+  body.classList.add("ai-body-collapsed");
+  expand.textContent = "▼ Expand";
   body.innerHTML = '<div class="ai-empty">Running LangGraph analysis via Bedrock… this can take a few seconds.</div>';
   fetch("/api/analysis").then(r=>r.json()).then(a=>{
     btn.disabled = false; btn.textContent = "↻ Regenerate";
