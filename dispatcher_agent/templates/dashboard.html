@@ -603,6 +603,24 @@ function parseNL(raw){
     return {from: fmtDate(from), to: fmtDate(to)};
   }
 
+  // "<day> <month> <year>"  e.g. "1 april 2022", "1st april 2022"
+  m = txt.match(/^(\d{1,2})(?:st|nd|rd|th)?\s+([a-z]+)\s+(\d{4})$/);
+  if(m && MONTHS[m[2]]!=null){
+    const day=parseInt(m[1]), mo=MONTHS[m[2]], yr=parseInt(m[3]);
+    return {from: fmtDate(new Date(yr, mo, day)), to: fmtDate(new Date(yr, mo, day))};
+  }
+
+  // "between/from <day> <month> [year] and/to <day> <month> [year]"
+  // e.g. "between 1 april and 20 april 2022", "from 1 april to 20 april 2022"
+  m = txt.match(/^(?:between|from)?\s*(\d{1,2})(?:st|nd|rd|th)?\s+([a-z]+)(?:\s+(\d{4}))?\s+(?:and|to)\s+(\d{1,2})(?:st|nd|rd|th)?\s+([a-z]+)(?:\s+(\d{4}))?$/);
+  if(m && MONTHS[m[2]]!=null && MONTHS[m[5]]!=null){
+    const d1=parseInt(m[1]), mo1=MONTHS[m[2]], yr1=m[3]?parseInt(m[3]):null;
+    const d2=parseInt(m[4]), mo2=MONTHS[m[5]], yr2=m[6]?parseInt(m[6]):null;
+    const fromYr=yr1||yr2, toYr=yr2||yr1;
+    if(fromYr && toYr)
+      return {from: fmtDate(new Date(fromYr, mo1, d1)), to: fmtDate(new Date(toYr, mo2, d2))};
+  }
+
   // "last N days/weeks/months"
   m = txt.match(/last\s+(\d+)\s+(day|days|week|weeks|month|months)/);
   if(m){
