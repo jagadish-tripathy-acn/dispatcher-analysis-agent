@@ -24,9 +24,30 @@ from collections import Counter, defaultdict
 from datetime import datetime
 
 # ---- config --------------------------------------------------------------
-# dispatcher_agent/  ->  parent is the Disp_Analysis_PERL root that holds Logs\
-ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-DEFAULT_LOG_DIR = os.path.join(ROOT, "Logs")
+_HERE = os.path.dirname(os.path.abspath(__file__))
+_CONFIG_FILE = os.path.join(_HERE, "config.json")
+
+def _load_log_dirs():
+    """Return list of resolved log directory paths from config.json."""
+    import json
+    try:
+        with open(_CONFIG_FILE, encoding="utf-8") as f:
+            cfg = json.load(f)
+        dirs = cfg.get("log_dirs") or []
+        resolved = []
+        for d in dirs:
+            # Relative paths are resolved from the config file's directory.
+            p = d if os.path.isabs(d) else os.path.normpath(os.path.join(_HERE, d))
+            resolved.append(p)
+        if resolved:
+            return resolved
+    except (FileNotFoundError, ValueError):
+        pass
+    # Fallback: sibling Logs\ folder next to the project root
+    ROOT = os.path.dirname(_HERE)
+    return [os.path.join(ROOT, "Logs")]
+
+LOG_DIRS = _load_log_dirs()
 
 # Valid dispatcher lifecycle states.
 STATES = {
@@ -75,8 +96,8 @@ def _avg(values):
 class DispatcherLogParser:
     """Parses dispatcher logs and produces a stats dict for the dashboard."""
 
-    def __init__(self, log_dir=DEFAULT_LOG_DIR):
-        self.log_dir = log_dir
+    def __init__(self, log_dirs=None):
+        self.log_dirs = log_dirs if log_dirs is not None else LOG_DIRS
         # Per-task accumulator.
         self.tasks = {}          # task_id -> meta dict
         self.state_times = defaultdict(dict)  # task_id -> {state: earliest datetime}
@@ -129,8 +150,8 @@ class DispatcherLogParser:
                 i += 1
 
     def ingest(self):
-        pattern = os.path.join(self.log_dir, "*.log")
-        for path in sorted(glob.glob(pattern)):
+        paths = sorted(p for d in self.log_dirs for p in glob.glob(os.path.join(d, "*.log")))
+        for path in paths:
             self.files_read.append(os.path.basename(path))
             with open(path, "r", encoding="utf-8", errors="ignore") as fh:
                 for line in fh:
@@ -278,9 +299,9 @@ class DispatcherLogParser:
         }
 
 
-def analyse(log_dir=DEFAULT_LOG_DIR, date_from=None, date_to=None):
+def analyse(log_dirs=None, date_from=None, date_to=None):
     """Convenience entry point used by the web layer."""
-    return DispatcherLogParser(log_dir).ingest().run(date_from=date_from, date_to=date_to)
+    return DispatcherLogParser(log_dirs).ingest().run(date_from=date_from, date_to=date_to)
 
 
 if __name__ == "__main__":
