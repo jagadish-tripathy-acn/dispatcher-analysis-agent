@@ -11,11 +11,16 @@ generate_complete_task_analysis.pl) with one Python component, so there is no
 CSV middleman. The web layer (app.py) just calls DispatcherLogParser().run().
 
 Log line format (comma-separated payload after a log prefix):
-    <logtime>,<ms> INFO  - <time> - TaskID,Status,Site,JobName,0,User,Group,
-        Provider,Date,1,Target,0,3, <State,Timestamp> <State,Timestamp> ...
-The trailing (State, Timestamp) pairs (from index 13 on) are the lifecycle
+    <prefix> <time> - TaskID,Status,Site,JobName,0,User,Group,
+        Provider,Date,...,<State,Timestamp>,<State,Timestamp>,...
+The prefix varies between dispatcher versions, e.g.
+    2026-08-07 08:51:44,246 INFO  - 2026-08-07 08:51:44 - ...
+    2026/08/07-08:51:44.246 UTC - INFO  - - 0DAE2E3C5 - - - 2026-08-07 08:51:44 - ...
+so it is matched loosely: everything up to the last "<yyyy-mm-dd hh:mm:ss> - "
+is discarded. The trailing (State, Timestamp) pairs are the lifecycle
 transitions, e.g. INITIAL/... PREPARING/... SCHEDULED/... TRANSLATING/...
-LOADING/... COMPLETE/...
+LOADING/... COMPLETE/... Their starting index also varies, so it is located by
+scanning for the first known state name rather than hardcoded.
 """
 import glob
 import os
@@ -27,27 +32,35 @@ from datetime import datetime
 _HERE = os.path.dirname(os.path.abspath(__file__))
 _CONFIG_FILE = os.path.join(_HERE, "config.json")
 
-def _load_log_dirs():
-    """Return list of resolved log directory paths from config.json."""
+# Only dispatcher client history logs are ingested.
+DEFAULT_LOG_GLOB = "History_DispatcherClient*.log"
+
+def _load_config():
     import json
     try:
         with open(_CONFIG_FILE, encoding="utf-8") as f:
-            cfg = json.load(f)
-        dirs = cfg.get("log_dirs") or []
-        resolved = []
-        for d in dirs:
-            # Relative paths are resolved from the config file's directory.
-            p = d if os.path.isabs(d) else os.path.normpath(os.path.join(_HERE, d))
-            resolved.append(p)
-        if resolved:
-            return resolved
+            return json.load(f)
     except (FileNotFoundError, ValueError):
-        pass
+        return {}
+
+_CONFIG = _load_config()
+
+def _load_log_dirs():
+    """Return list of resolved log directory paths from config.json."""
+    dirs = _CONFIG.get("log_dirs") or []
+    resolved = []
+    for d in dirs:
+        # Relative paths are resolved from the config file's directory.
+        p = d if os.path.isabs(d) else os.path.normpath(os.path.join(_HERE, d))
+        resolved.append(p)
+    if resolved:
+        return resolved
     # Fallback: sibling Logs\ folder next to the project root
     ROOT = os.path.dirname(_HERE)
     return [os.path.join(ROOT, "Logs")]
 
 LOG_DIRS = _load_log_dirs()
+LOG_GLOB = _CONFIG.get("log_file_pattern") or DEFAULT_LOG_GLOB
 
 # Valid dispatcher lifecycle states.
 STATES = {
@@ -59,13 +72,15 @@ TERMINAL_STATES = {"COMPLETE", "TERMINAL", "DELETE", "DUPLICATE"}
 # Field positions inside the comma-split payload.
 IDX_TASK_ID, IDX_STATUS, IDX_SITE, IDX_JOB = 0, 1, 2, 3
 IDX_USER, IDX_GROUP, IDX_PROVIDER = 5, 6, 7
+IDX_DATE = 8
 IDX_TARGET = 10
-IDX_STATES_START = 13  # trailing (state, timestamp) pairs begin here
+MIN_FIELDS = 9  # task id .. date must be present
 
-# Pull the payload (everything after "<time> - ") off the log prefix.
+# Pull the payload off the log prefix: skip everything up to the first
+# "<yyyy-mm-dd hh:mm:ss> - ", which is where the payload starts in every
+# dispatcher prefix variant.
 _LINE_RE = re.compile(
-    r"^\d{4}-\d\d-\d\d \d\d:\d\d:\d\d,\d+\s+\w+\s+-\s+"
-    r"\d{4}-\d\d-\d\d \d\d:\d\d:\d\d\s+-\s+(?P<payload>.+)$"
+    r"^.*?(?P<logtime>\d{4}-\d\d-\d\d \d\d:\d\d:\d\d)\s+-\s+(?P<payload>.+)$"
 )
 
 QUEUE_BUCKETS = ["<10", "10-30", "30-60", ">60"]
@@ -109,12 +124,19 @@ class DispatcherLogParser:
         if not m:
             return
         parts = [p.strip() for p in m.group("payload").split(",")]
-        if len(parts) <= IDX_TARGET:
+        if len(parts) < MIN_FIELDS:
             return
 
         task_id = parts[IDX_TASK_ID]
         if not task_id:
             return
+
+        # Locate the lifecycle block: the first known state name at or after the
+        # date field, so a status value earlier in the row is never mistaken for it.
+        states_start = next(
+            (i for i in range(IDX_DATE + 1, len(parts) - 1) if parts[i] in STATES),
+            len(parts),
+        )
 
         # Static metadata (first non-empty wins).
         meta = self.tasks.setdefault(task_id, {
@@ -124,11 +146,13 @@ class DispatcherLogParser:
         })
         for key, idx in (("job", IDX_JOB), ("user", IDX_USER), ("group", IDX_GROUP),
                          ("target", IDX_TARGET), ("provider", IDX_PROVIDER), ("site", IDX_SITE)):
-            if not meta[key] and idx < len(parts):
+            # Never read a metadata field out of the lifecycle block: log variants
+            # that carry fewer columns would otherwise pick up a state/timestamp.
+            if not meta[key] and idx < min(len(parts), states_start):
                 meta[key] = parts[idx]
 
         # Current status = status on the most recent line for this task.
-        line_time = _parse_dt(parts[8]) if len(parts) > 8 else None
+        line_time = _parse_dt(parts[IDX_DATE])
         cur_status = parts[IDX_STATUS] if IDX_STATUS < len(parts) else ""
         if cur_status in STATES and (meta["last_seen"] is None or (line_time and line_time >= meta["last_seen"])):
             meta["current_status"] = cur_status
@@ -136,7 +160,7 @@ class DispatcherLogParser:
                 meta["last_seen"] = line_time
 
         # Trailing (state, timestamp) pairs -> keep earliest time per state.
-        i = IDX_STATES_START
+        i = states_start
         while i + 1 < len(parts):
             state, ts = parts[i], parts[i + 1]
             if state in STATES:
@@ -150,7 +174,7 @@ class DispatcherLogParser:
                 i += 1
 
     def ingest(self):
-        paths = sorted(p for d in self.log_dirs for p in glob.glob(os.path.join(d, "*.log")))
+        paths = sorted(p for d in self.log_dirs for p in glob.glob(os.path.join(d, LOG_GLOB)))
         for path in paths:
             self.files_read.append(os.path.basename(path))
             with open(path, "r", encoding="utf-8", errors="ignore") as fh:
