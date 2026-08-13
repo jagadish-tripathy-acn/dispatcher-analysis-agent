@@ -1,891 +1,1566 @@
 <!DOCTYPE html>
-<html lang="en">
+<html lang="en" data-palette="#2a78d6,#d03b3b,#eda100,#4a3aa7">
 <head>
-<meta charset="UTF-8">
-<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Dispatcher Insights</title>
 <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js"></script>
-<script src="https://cdn.jsdelivr.net/npm/chrono-node@2.7.7/dist/chrono.min.js"></script>
+<!-- chrono-node has no UMD build (its package entry is CommonJS), so a plain
+     <script src> leaves no global behind. Load the ESM bundle and publish it,
+     then tell the page so the Ask box can re-parse what is already typed. It
+     is strictly optional: parseNL()'s own patterns cover the common phrasings
+     and it degrades to a hint if this never arrives. -->
+<script type="module">
+  try{
+    const chrono = await import("https://cdn.jsdelivr.net/npm/chrono-node@2.7.7/+esm");
+    window.chrono = chrono;
+    window.dispatchEvent(new Event("chrono-ready"));
+  }catch(e){ console.warn("free-text date parser unavailable:", e); }
+</script>
 <style>
-  :root{
-    --bg:#f0f4fa; --card:#ffffff; --card2:#eef2fb; --line:#dde3ef; --ink:#1a2340;
-    --dim:#4a5578; --faint:#7a8ab0; --indigo:#5c6ef5; --cyan:#0aabaf;
-    --ok:#0d8b63; --warn:#9a6800; --crit:#c4294a; --mono:"Consolas",monospace;
-  }
-  *{box-sizing:border-box;margin:0;padding:0}
-  body{font-family:"Segoe UI",system-ui,sans-serif;color:var(--ink);font-size:14px;
-    background:radial-gradient(900px 500px at 88% -8%,rgba(92,110,245,.08),transparent 60%),var(--bg);min-height:100vh}
-  header{display:flex;align-items:center;gap:14px;padding:15px 30px;border-bottom:1px solid var(--line);
-    position:sticky;top:0;background:rgba(240,244,250,.9);backdrop-filter:blur(10px);z-index:5}
-  header .glyph{width:34px;height:34px;border-radius:9px;display:grid;place-items:center;font-weight:900;color:#ffffff;
-    background:conic-gradient(from 200deg,var(--indigo),var(--cyan),var(--indigo))}
-  header h1{font-size:16px;font-weight:700}
-  header h1 small{display:block;font-size:10.5px;color:var(--faint);font-weight:500;letter-spacing:.5px}
-  header .grow{flex:1}
-  header .pill{font-size:11.5px;color:var(--dim);border:1px solid var(--line);border-radius:999px;padding:6px 13px}
-  .btn{font-size:12px;color:#ffffff;background:var(--cyan);border:none;border-radius:8px;padding:7px 14px;cursor:pointer;font-weight:700;flex-shrink:0}
-  .btn:hover{filter:brightness(1.1)}
-  .btn:disabled{opacity:.55;cursor:not-allowed;filter:none}
-  .btn-ghost{font-size:11.5px;color:var(--dim);background:transparent;border:1px solid var(--line);border-radius:8px;
-    padding:5px 12px;cursor:pointer;font-weight:600;transition:background .15s,color .15s;flex-shrink:0}
-  .btn-ghost:hover{background:var(--card2);color:var(--ink)}
-  .page{max-width:1180px;margin:0 auto;padding:24px 30px 70px}
-  .kpis{display:grid;grid-template-columns:repeat(4,1fr);gap:12px;margin-bottom:22px}
-  .kpi-row{display:contents}
-  .kpi-row-label{grid-column:1/-1;font-size:10px;font-weight:700;text-transform:uppercase;
-    letter-spacing:.6px;color:var(--faint);padding:4px 2px 0;border-top:1px solid var(--line);margin-top:2px}
-  .kpi-row-label:first-child{border-top:none;padding-top:0}
-  .kpi{background:var(--card);border:1px solid var(--line);border-radius:14px;padding:16px 18px}
-  .kpi .v{font-family:var(--mono);font-size:28px;font-weight:800}
-  .kpi .v small{font-size:13px;color:var(--faint)}
-  .kpi .l{font-size:11px;color:var(--faint);text-transform:uppercase;letter-spacing:.4px;margin-top:4px}
-  .kpi.warn .v{color:var(--warn)} .kpi.crit .v{color:var(--crit)} .kpi.ok .v{color:var(--ok)}
-  .grid{display:grid;grid-template-columns:1fr 1fr;gap:16px}
-  .card{background:var(--card);border:1px solid var(--line);border-radius:16px;padding:18px 20px}
-  .card h3{font-size:13px;font-weight:700;margin-bottom:14px;display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:8px}
-  .card h3 .sub{font-size:11px;color:var(--faint);font-weight:500}
-  .card.wide{grid-column:1 / -1}
-  canvas{max-height:300px}
-  .tablewrap{max-height:420px;overflow:auto}
-  table{width:100%;border-collapse:collapse;font-size:12px}
-  th,td{text-align:left;padding:8px 10px;border-bottom:1px solid var(--line);white-space:nowrap}
-  th{color:var(--faint);text-transform:uppercase;font-size:10px;letter-spacing:.4px;position:sticky;top:0;background:var(--card)}
-  td.mono{font-family:var(--mono);color:var(--dim)}
-  .tag{font-size:10px;font-weight:700;padding:2px 8px;border-radius:6px}
-  .tag.ok{background:rgba(53,214,165,.14);color:var(--ok)}
-  .tag.stuck{background:rgba(255,111,139,.14);color:var(--crit)}
-  .tag.warn{background:rgba(255,203,92,.16);color:var(--warn)}
-  .tag.sev-low,.tag.pri-low{background:rgba(53,214,165,.14);color:var(--ok)}
-  .tag.sev-medium,.tag.pri-medium{background:rgba(255,203,92,.16);color:var(--warn)}
-  .tag.sev-high,.tag.pri-high{background:rgba(255,111,139,.14);color:var(--crit)}
-  .tag.sev-critical,.tag.pri-critical{background:rgba(255,111,139,.28);color:var(--crit)}
+/* ══ tokens ════════════════════════════════════════════════════════════
+   Light theme only. Surfaces are white so every data colour below was
+   validated against #ffffff (scripts/validate_palette.js, --mode light). */
+:root{
+  --bg:#f4f5f7; --surface:#ffffff; --surface-2:#fafaf9; --surface-3:#f2f2f0;
+  --line:#e5e4df; --line-2:#d6d5cf; --line-3:#bfbeb8;
+  --ink:#1b1b19; --ink-2:#57564f; --ink-3:#8a8880;
+  --accent:#2a78d6; --accent-soft:#eaf1fb;
 
-  /* ── AI card ─────────────────────────────────────────────────── */
-  .ai-card .ai-head{display:flex;align-items:center;gap:12px;margin-bottom:4px;flex-wrap:wrap}
-  .ai-card .ai-head h3{display:flex;align-items:baseline;gap:8px;justify-content:flex-start;
-    margin-bottom:0;flex:1 1 auto;min-width:0}
-  .ai-card .ai-head h3 .sub{white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
-  .ai-card .ai-head-right{display:flex;align-items:center;gap:8px;flex-shrink:0}
-  .ai-gauge{flex-shrink:0}
-  .ai-gauge-label{font-family:var(--mono);font-size:11px;fill:var(--dim)}
-  .ai-gauge-score{font-family:var(--mono);font-size:13px;font-weight:700}
-  .ai-card .badge{font-family:var(--mono);font-size:11px;color:var(--dim);border:1px solid var(--line);
-    border-radius:999px;padding:4px 11px;white-space:nowrap}
-  .ai-summary{font-size:14px;line-height:1.6;color:var(--ink);margin:10px 0 4px}
-  .ai-assessment{font-size:12.5px;line-height:1.6;color:var(--dim);margin:0 0 14px;
-    padding:8px 12px;background:var(--card2);border-left:3px solid var(--indigo);border-radius:0 8px 8px 0}
-  .ai-section{margin-top:16px}
-  .ai-section h4{font-size:11px;color:var(--faint);text-transform:uppercase;letter-spacing:.4px;margin-bottom:8px}
-  .ai-analysis{font-size:12.5px;line-height:1.7;color:var(--dim);white-space:pre-wrap}
-  .ai-list{list-style:none;display:flex;flex-direction:column;gap:10px}
-  .ai-item{background:var(--card2);border:1px solid var(--line);border-radius:10px;padding:10px 14px}
-  .ai-item .ai-item-head{display:flex;align-items:center;gap:8px;margin-bottom:4px}
-  .ai-item .ai-item-title{font-size:12.5px;font-weight:700}
-  .ai-item .ai-item-desc{font-size:12px;color:var(--dim);line-height:1.5}
-  .ai-empty{font-size:12px;color:var(--faint)}
-  .ai-error{font-size:12.5px;color:var(--crit)}
-  /* reasoning collapsible */
-  .ai-reasoning-toggle{font-size:11px;color:var(--faint);background:none;border:none;cursor:pointer;
-    padding:0;text-decoration:underline dotted;margin-top:6px}
-  .ai-reasoning-toggle:hover{color:var(--dim)}
-  .ai-reasoning{font-size:12px;line-height:1.6;color:var(--faint);margin-top:6px;
-    padding:8px 12px;background:var(--card2);border-radius:8px;white-space:pre-wrap}
-  /* body collapse */
-  .ai-body-wrap{position:relative}
-  .ai-body-collapsed{max-height:110px;overflow:hidden}
-  .ai-body-collapsed::after{content:"";position:absolute;bottom:0;left:0;right:0;height:48px;
-    background:linear-gradient(transparent,var(--card));pointer-events:none}
-  .ai-expand-btn{display:block;width:100%;margin-top:8px;font-size:11.5px;font-weight:600;
-    color:var(--dim);background:transparent;border:1px solid var(--line);border-radius:8px;
-    padding:5px 0;cursor:pointer;transition:background .15s,color .15s}
-  .ai-expand-btn:hover{background:var(--card2);color:var(--ink)}
+  /* data series — validated set: #2a78d6,#d03b3b,#eda100,#4a3aa7 */
+  --c-complete:#2a78d6; --c-terminal:#d03b3b; --c-queued:#eda100; --c-active:#4a3aa7;
+  --c-alt:#eb6834;                     /* second line in two-series charts */
+  --c-spark:#a8c4e6;
 
-  /* ── Table toolbar ───────────────────────────────────────────── */
-  .table-toolbar{display:flex;align-items:center;gap:8px;flex-wrap:wrap;margin-bottom:10px}
-  .filter{font-size:12px;color:var(--dim);background:var(--card2);border:1px solid var(--line);border-radius:8px;padding:6px 10px;flex:1;min-width:160px}
-  .sfbtn{font-size:11px;padding:4px 12px;border-radius:6px;border:1px solid var(--line);
-    background:transparent;color:var(--dim);cursor:pointer;font-weight:600;transition:background .15s}
-  .sfbtn:hover{background:var(--card2);color:var(--ink)}
-  .sfbtn.active{background:var(--indigo);color:#fff;border-color:var(--indigo)}
+  /* status — reserved, never reused as a series colour */
+  --st-good:#0ca30c; --st-warning:#fab219; --st-serious:#ec835a; --st-critical:#d03b3b;
 
-  .loading{text-align:center;color:var(--faint);padding:60px}
-  .thru-filters{display:flex;gap:5px;margin-left:auto}
-  .fbtn{font-size:11px;padding:3px 10px;border-radius:6px;border:1px solid var(--line);
-    background:transparent;color:var(--dim);cursor:pointer;font-weight:600;transition:background .15s}
-  .fbtn:hover{background:var(--card2);color:var(--ink)}
-  .fbtn.active{background:var(--indigo);color:#fff;border-color:var(--indigo)}
-  .kpi-filter-bar{display:flex;align-items:center;gap:6px;margin-bottom:12px;flex-wrap:wrap}
-  .kpi-filter-label{font-size:11px;color:var(--faint);text-transform:uppercase;letter-spacing:.5px;margin-right:2px}
-  .kfi-sep{color:var(--line);font-size:14px;margin:0 4px}
-  .kfi-date{font-size:12px;color:var(--ink);background:var(--card);border:1px solid var(--line);
-    border-radius:8px;padding:4px 8px;cursor:pointer}
-  .kfi-date:focus{outline:2px solid var(--indigo);border-color:var(--indigo)}
-  .nl-row{display:flex;align-items:center;gap:6px;margin-bottom:8px;flex-wrap:wrap}
-  .nl-input{font-size:12px;color:var(--ink);background:var(--card);border:1px solid var(--line);
-    border-radius:8px;padding:5px 10px;flex:1;min-width:260px}
-  .nl-input:focus{outline:2px solid var(--indigo);border-color:var(--indigo)}
-  .nl-input::placeholder{color:var(--faint)}
-  .nl-hint{font-size:11px;color:var(--faint);margin-left:2px}
-  .nl-parsed{font-size:11px;color:var(--ok);margin-left:4px;font-weight:600}
-  .nl-error{font-size:11px;color:var(--crit);margin-left:4px}
-  @media(max-width:920px){.kpis{grid-template-columns:repeat(2,1fr)}.grid{grid-template-columns:1fr}}
+  --mono:ui-monospace,"Cascadia Mono","Consolas","Roboto Mono",monospace;
+  --sans:"Segoe UI",system-ui,-apple-system,sans-serif;
+  --shadow:0 1px 2px rgba(27,27,25,.05);
+  --radius:10px;
+}
+*{box-sizing:border-box}
+html,body{margin:0;padding:0}
+body{background:var(--bg);color:var(--ink);font:14px/1.45 var(--sans);
+     -webkit-font-smoothing:antialiased}
+h1,h2,h3,h4{margin:0;font-weight:600;letter-spacing:-.01em}
+button{font:inherit;color:inherit;cursor:pointer}
+a{color:var(--accent)}
+.num{font-family:var(--mono);font-variant-numeric:tabular-nums}
+.mono{font-family:var(--mono);font-size:12px}
+.muted{color:var(--ink-3)}
+.sr{position:absolute;width:1px;height:1px;overflow:hidden;clip:rect(0 0 0 0)}
+
+/* ══ header ═══════════════════════════════════════════════════════════ */
+.topbar{background:var(--surface);border-bottom:1px solid var(--line);
+        padding:12px 22px;display:flex;align-items:center;gap:18px;flex-wrap:wrap}
+.brand{display:flex;align-items:baseline;gap:10px}
+.brand h1{font-size:16px}
+.brand .tag{font-family:var(--mono);font-size:10.5px;letter-spacing:.08em;
+  text-transform:uppercase;color:var(--ink-3);border:1px solid var(--line-2);
+  border-radius:4px;padding:1px 5px}
+.topmeta{margin-left:auto;display:flex;align-items:center;gap:14px;
+  font-size:11.5px;color:var(--ink-3);font-family:var(--mono)}
+.ghost{background:var(--surface);border:1px solid var(--line-2);border-radius:6px;
+  padding:5px 11px;font-size:12px;color:var(--ink-2)}
+.ghost:hover{background:var(--surface-3);border-color:var(--line-3)}
+.ghost:disabled{opacity:.5;cursor:default}
+.primary{background:var(--accent);border:1px solid var(--accent);color:#fff;
+  border-radius:6px;padding:6px 13px;font-size:12px;font-weight:600}
+.primary:hover{background:#1f66bd}
+.primary:disabled{opacity:.55;cursor:default}
+
+/* ══ filter row — one row, above everything it affects ════════════════ */
+.filters{background:var(--surface);border-bottom:1px solid var(--line);
+  padding:9px 22px;display:flex;align-items:center;gap:10px;flex-wrap:wrap;
+  position:sticky;top:0;z-index:20}
+.flabel{font-size:11px;letter-spacing:.06em;text-transform:uppercase;color:var(--ink-3)}
+.seg{display:flex;border:1px solid var(--line-2);border-radius:6px;overflow:hidden}
+.seg button{background:var(--surface);border:0;border-right:1px solid var(--line);
+  padding:5px 10px;font-size:12px;color:var(--ink-2)}
+.seg button:last-child{border-right:0}
+.seg button:hover{background:var(--surface-3)}
+.seg button[aria-pressed="true"]{background:var(--accent-soft);color:#1b4f8f;font-weight:600}
+input[type="date"],input[type="text"],select{background:var(--surface);
+  border:1px solid var(--line-2);border-radius:6px;padding:5px 8px;font:12px var(--sans);
+  color:var(--ink)}
+input[type="date"]{font-family:var(--mono);font-size:11.5px}
+input:focus,select:focus,button:focus-visible,[role="button"]:focus-visible{
+  outline:2px solid #7aa9e4;outline-offset:1px}
+#nl{width:230px}
+.nlnote{font-size:11px;font-family:var(--mono);color:var(--ink-3)}
+.nlnote .ok{color:#1f66bd}
+.nlnote .bad{color:#a72d2d}
+.divider{width:1px;height:22px;background:var(--line)}
+
+/* ══ layout ═══════════════════════════════════════════════════════════ */
+main{padding:18px 22px 48px;max-width:1680px;margin:0 auto}
+main.busy{opacity:.45;pointer-events:none;transition:opacity .12s}
+section{margin-bottom:18px}
+.shead{display:flex;align-items:center;gap:12px;flex-wrap:wrap;margin:0 0 10px}
+.shead h2{font-size:13px;letter-spacing:.04em;text-transform:uppercase;color:var(--ink-2)}
+.shead .hint{font-size:11.5px;color:var(--ink-3)}
+.shead .right{margin-left:auto;display:flex;align-items:center;gap:8px}
+
+/* ══ system strip ═════════════════════════════════════════════════════ */
+.strip{display:grid;grid-template-columns:repeat(auto-fit,minmax(152px,1fr));
+  gap:1px;background:var(--line);border:1px solid var(--line);border-radius:var(--radius);
+  overflow:hidden;box-shadow:var(--shadow)}
+.st{background:var(--surface);padding:11px 13px 12px}
+.st .k{font-size:10.5px;letter-spacing:.06em;text-transform:uppercase;color:var(--ink-3);
+  white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.st .v{font-family:var(--mono);font-variant-numeric:tabular-nums;font-size:19px;
+  font-weight:600;letter-spacing:-.02em;margin-top:3px;line-height:1.15}
+.st .s{font-size:11px;color:var(--ink-3);margin-top:2px;font-family:var(--mono)}
+.st.hero{background:var(--surface)}
+.st.hero .v{font-size:32px;letter-spacing:-.03em}
+
+/* ══ job indicator boxes ══════════════════════════════════════════════ */
+.jobgrid{display:grid;grid-template-columns:repeat(auto-fill,minmax(304px,1fr));gap:12px}
+.jbox{--sev:var(--line-2);--tint:transparent;
+  position:relative;background:var(--surface);border:1px solid var(--line);
+  border-left:3px solid var(--sev);border-radius:var(--radius);padding:12px 13px 11px;
+  box-shadow:var(--shadow);text-align:left;display:block;width:100%;
+  transition:box-shadow .12s,transform .12s}
+.jbox:hover{box-shadow:0 3px 10px rgba(27,27,25,.10);transform:translateY(-1px)}
+.jbox[aria-pressed="true"]{border-color:var(--accent);border-left-color:var(--sev);
+  box-shadow:0 0 0 2px var(--accent-soft)}
+.jbox.flagged{background:
+  linear-gradient(var(--tint),var(--tint)) padding-box,var(--surface)}
+.jb-top{display:flex;align-items:flex-start;gap:8px;margin-bottom:7px}
+.jb-name{font-size:13.5px;font-weight:600;line-height:1.25;word-break:break-word}
+.jb-sev{margin-left:auto;flex:none}
+.jb-fig{display:flex;align-items:baseline;gap:6px}
+.jb-fig .n{font-family:var(--mono);font-variant-numeric:tabular-nums;font-size:22px;
+  font-weight:600;letter-spacing:-.02em}
+.jb-fig .u{font-size:11px;color:var(--ink-3)}
+.jb-fig .share{margin-left:auto;font-size:11px;color:var(--ink-3);font-family:var(--mono)}
+.meter{display:flex;gap:2px;height:7px;margin:8px 0 7px;background:var(--surface-3);
+  border-radius:3px;overflow:hidden}
+.meter i{display:block;min-width:2px}
+.jb-legend{display:flex;flex-wrap:wrap;gap:2px 12px;font-size:11.5px;color:var(--ink-2)}
+.jb-legend span{display:inline-flex;align-items:center;gap:5px;white-space:nowrap}
+.jb-legend b{font-family:var(--mono);font-variant-numeric:tabular-nums;color:var(--ink);font-weight:600}
+.dot{width:8px;height:8px;border-radius:2px;flex:none}
+.d-complete{background:var(--c-complete)} .d-terminal{background:var(--c-terminal)}
+.d-queued{background:var(--c-queued)}     .d-active{background:var(--c-active)}
+.d-dropped{background:#a9a8a1}
+.jb-stats{display:flex;gap:14px;margin-top:9px;padding-top:8px;border-top:1px solid var(--line);
+  font-size:11px;color:var(--ink-3);flex-wrap:wrap}
+.jb-stats b{font-family:var(--mono);font-variant-numeric:tabular-nums;color:var(--ink-2);
+  font-weight:600;font-size:11.5px}
+.jb-spark{display:block;width:100%;height:22px;margin-top:9px}
+.jb-flags{margin-top:9px;padding-top:8px;border-top:1px solid var(--line);
+  display:flex;flex-wrap:wrap;gap:5px;align-items:center}
+.jb-cta{margin-left:auto;font-size:11px;font-weight:600;color:var(--accent);white-space:nowrap}
+.jbox:hover .jb-cta{text-decoration:underline}
+.jb-ok{margin-top:9px;padding-top:8px;border-top:1px solid var(--line);
+  font-size:11px;color:var(--ink-3)}
+
+/* severity: colour + glyph + word, never colour alone */
+.jbox.sev-critical{--sev:var(--st-critical);--tint:rgba(208,59,59,.045)}
+.jbox.sev-high    {--sev:var(--st-serious); --tint:rgba(236,131,90,.06)}
+.jbox.sev-medium  {--sev:var(--st-warning); --tint:rgba(250,178,25,.07)}
+.jbox.sev-low     {--sev:var(--ink-3);      --tint:rgba(138,136,128,.05)}
+.jbox.sev-ok      {--sev:#cfe6cf}
+.chip{display:inline-flex;align-items:center;gap:4px;border:1px solid var(--line-2);
+  background:var(--surface-2);border-radius:11px;padding:1px 8px;font-size:10.5px;
+  font-weight:600;letter-spacing:.04em;color:var(--ink-2);white-space:nowrap}
+.chip .g{font-size:10px;line-height:1}
+.chip.critical{border-color:#e7a9a9;background:#fdf1f1;color:#962626}
+.chip.serious {border-color:#f2c2ab;background:#fdf3ee;color:#9c4a26}
+.chip.warning {border-color:#f0d79a;background:#fdf7e8;color:#87611a}
+.chip.good    {border-color:#b6ddb6;background:#f0f8f0;color:#186b18}
+.chip.info    {border-color:var(--line-2);background:var(--surface-3);color:var(--ink-2)}
+.chip.flag{font-weight:500;letter-spacing:0;font-size:11px;text-transform:none}
+
+/* ══ cards & panel ════════════════════════════════════════════════════ */
+.card{background:var(--surface);border:1px solid var(--line);border-radius:var(--radius);
+  box-shadow:var(--shadow)}
+.panel-head{display:flex;gap:14px;align-items:flex-start;padding:14px 16px 12px;
+  border-bottom:1px solid var(--line);flex-wrap:wrap}
+.panel-head h2{font-size:16px;display:flex;align-items:center;gap:9px;flex-wrap:wrap}
+.panel-sub{font-size:11.5px;color:var(--ink-3);font-family:var(--mono);margin-top:4px}
+.panel-head .right{margin-left:auto;display:flex;gap:8px;align-items:center}
+.tabs{display:flex;gap:2px;padding:0 16px;border-bottom:1px solid var(--line);
+  background:var(--surface-2);border-radius:0;flex-wrap:wrap}
+.tabs button{background:transparent;border:0;border-bottom:2px solid transparent;
+  padding:9px 12px;font-size:12.5px;color:var(--ink-2);display:flex;align-items:center;gap:6px}
+.tabs button:hover{color:var(--ink)}
+.tabs button[aria-selected="true"]{color:var(--ink);border-bottom-color:var(--accent);font-weight:600}
+.tabs .cnt{font-family:var(--mono);font-size:10.5px;background:var(--surface-3);
+  border:1px solid var(--line);border-radius:9px;padding:0 5px;color:var(--ink-3)}
+.tabbody{padding:16px}
+
+.grid2{display:grid;grid-template-columns:1fr 1fr;gap:14px}
+.grid3{display:grid;grid-template-columns:repeat(3,1fr);gap:14px}
+@media (max-width:1100px){.grid2,.grid3{grid-template-columns:1fr}}
+figure.chart{margin:0;border:1px solid var(--line);border-radius:var(--radius);
+  background:var(--surface);padding:12px 14px 10px}
+figure.chart.span{grid-column:1/-1}
+figcaption{margin-bottom:10px}
+figcaption h3{font-size:12.5px}
+figcaption .note{margin:2px 0 0;font-size:11px;color:var(--ink-3)}
+.cwrap{position:relative;height:230px}
+.cwrap.tall{height:300px}
+.cwrap.short{height:180px}
+details.dt{margin-top:8px;border-top:1px solid var(--line);padding-top:6px}
+details.dt summary{font-size:11px;color:var(--ink-3);cursor:pointer;list-style:none}
+details.dt summary::-webkit-details-marker{display:none}
+details.dt summary::before{content:"▸ ";font-size:9px}
+details.dt[open] summary::before{content:"▾ "}
+details.dt .scroll{max-height:220px;overflow:auto;margin-top:6px}
+
+/* ══ tables ═══════════════════════════════════════════════════════════ */
+table{width:100%;border-collapse:collapse;font-size:12px}
+th,td{text-align:left;padding:6px 9px;border-bottom:1px solid var(--line);white-space:nowrap}
+th{font-size:10.5px;letter-spacing:.05em;text-transform:uppercase;color:var(--ink-3);
+  font-weight:600;background:var(--surface-2);position:sticky;top:0;z-index:1}
+td.n,th.n{text-align:right;font-family:var(--mono);font-variant-numeric:tabular-nums}
+tbody tr:hover{background:var(--surface-2)}
+.tscroll{overflow:auto;max-height:520px;border:1px solid var(--line);border-radius:8px}
+.pill{display:inline-block;border-radius:10px;padding:1px 7px;font-size:10.5px;
+  font-weight:600;border:1px solid var(--line-2);background:var(--surface-2);color:var(--ink-2)}
+.pill.s-COMPLETE{border-color:#aecbec;background:#eef4fc;color:#1b4f8f}
+.pill.s-TERMINAL{border-color:#e7a9a9;background:#fdf1f1;color:#96262e}
+.pill.s-SCHEDULED{border-color:#f0d79a;background:#fdf7e8;color:#87611a}
+.pill.s-TRANSLATING,.pill.s-LOADING,.pill.s-PREPARING,.pill.s-INITIAL{
+  border-color:#c3bce6;background:#f1effa;color:#3b2f8c}
+.tbar{display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin-bottom:10px}
+.tbar .right{margin-left:auto;display:flex;gap:8px;align-items:center}
+.pager{display:flex;gap:8px;align-items:center;justify-content:flex-end;margin-top:10px;
+  font-size:11.5px;color:var(--ink-3);font-family:var(--mono)}
+
+/* ══ anomalies & RCA ══════════════════════════════════════════════════ */
+.anom{border:1px solid var(--line);border-left:3px solid var(--sev,var(--line-2));
+  border-radius:8px;padding:11px 13px;margin-bottom:10px;background:var(--surface)}
+.anom.sev-critical{--sev:var(--st-critical)} .anom.sev-high{--sev:var(--st-serious)}
+.anom.sev-medium{--sev:var(--st-warning)}    .anom.sev-low{--sev:var(--ink-3)}
+.anom h4{font-size:13px;display:flex;align-items:center;gap:8px;flex-wrap:wrap}
+.anom p{margin:6px 0 0;font-size:12.5px;color:var(--ink-2)}
+.cmp{display:grid;grid-template-columns:104px 1fr 92px;gap:6px 10px;align-items:center;
+  margin-top:9px;font-size:11px;color:var(--ink-3)}
+.cmp .bar{height:7px;background:var(--surface-3);border-radius:3px;overflow:hidden}
+.cmp .bar i{display:block;height:100%;border-radius:3px}
+.cmp .val{font-family:var(--mono);font-variant-numeric:tabular-nums;color:var(--ink-2);
+  text-align:right;font-size:11.5px}
+.samples{margin-top:9px;display:flex;flex-wrap:wrap;gap:5px;align-items:center}
+.tid{font-family:var(--mono);font-size:11px;border:1px solid var(--line-2);
+  background:var(--surface-2);border-radius:4px;padding:1px 6px;color:var(--ink-2)}
+button.tid:hover{border-color:var(--accent);color:var(--accent)}
+.rca{border:1px solid var(--line);border-radius:8px;background:var(--surface-2);
+  padding:14px 16px;margin-top:6px}
+.rca h3{font-size:13px;margin-bottom:4px}
+.rca .lead{font-size:13px;color:var(--ink-2);margin:0 0 12px}
+.rca .primary-cause{background:var(--surface);border:1px solid var(--line);
+  border-left:3px solid var(--accent);border-radius:6px;padding:10px 12px;margin-bottom:14px}
+.rca .primary-cause .k{font-size:10.5px;letter-spacing:.06em;text-transform:uppercase;
+  color:var(--ink-3)}
+.rca .primary-cause .t{font-size:13.5px;font-weight:600;margin-top:3px}
+.rca h4{font-size:11px;letter-spacing:.06em;text-transform:uppercase;color:var(--ink-3);
+  margin:16px 0 8px}
+.rlist{list-style:none;margin:0;padding:0;display:grid;gap:8px}
+.rlist li{background:var(--surface);border:1px solid var(--line);border-radius:6px;padding:10px 12px}
+.rlist .hd{display:flex;align-items:center;gap:8px;flex-wrap:wrap;font-size:12.5px;font-weight:600}
+.rlist .hd .idx{font-family:var(--mono);color:var(--ink-3);font-weight:600;font-size:11px}
+.rlist .ev{margin:5px 0 0;font-size:12px;color:var(--ink-2)}
+.rlist .meta{margin:5px 0 0;font-size:11.5px;color:var(--ink-3)}
+.rlist .meta b{color:var(--ink-2);font-weight:600}
+.checks{list-style:none;margin:0;padding:0;display:grid;gap:5px}
+.checks li{display:flex;gap:9px;font-size:12.5px;background:var(--surface);
+  border:1px solid var(--line);border-radius:6px;padding:8px 11px}
+.checks .where{margin-left:auto;font-family:var(--mono);font-size:11px;color:var(--ink-3);
+  white-space:nowrap}
+.provenance{display:flex;gap:10px;align-items:center;flex-wrap:wrap;margin-top:14px;
+  padding-top:10px;border-top:1px solid var(--line);font-size:11px;color:var(--ink-3);
+  font-family:var(--mono)}
+.notice{border:1px solid #f0d79a;background:#fdf7e8;color:#7a5714;border-radius:6px;
+  padding:8px 11px;font-size:12px;margin-bottom:12px}
+.empty{padding:34px 18px;text-align:center;color:var(--ink-3);font-size:13px}
+.spinner{width:13px;height:13px;border:2px solid var(--line-2);border-top-color:var(--accent);
+  border-radius:50%;display:inline-block;animation:spin .7s linear infinite;vertical-align:-2px}
+@keyframes spin{to{transform:rotate(360deg)}}
+.working{display:flex;gap:9px;align-items:center;color:var(--ink-3);font-size:12.5px;padding:14px 0}
+.aicard .body{padding:16px}
+.kv{display:grid;grid-template-columns:auto 1fr;gap:4px 14px;font-size:12px}
+.kv dt{color:var(--ink-3)} .kv dd{margin:0;font-family:var(--mono)}
+@media (max-width:720px){
+  .topmeta{width:100%;margin-left:0}
+  main{padding:14px 12px 40px}
+  .grid2,.grid3{grid-template-columns:1fr}
+}
+@media print{.filters,.topbar .right,.tabs{display:none}body{background:#fff}}
 </style>
 </head>
 <body>
-<header>
-  <div class="glyph">D</div>
-  <h1>Dispatcher Insights</h1>
-  <div class="grow"></div>
-  <div class="pill" id="files">—</div>
-  <div class="pill" id="gen">loading…</div>
-  <button class="btn" onclick="reload()">↻ Refresh</button>
-</header>
 
-<main class="page"><div id="root"><div class="loading">Parsing dispatcher logs…</div></div></main>
+<div class="topbar">
+  <div class="brand">
+    <h1>Dispatcher Insights</h1>
+    <span class="tag">Teamcenter translation pipeline</span>
+  </div>
+  <div class="topmeta">
+    <span id="meta-files">—</span>
+    <span id="meta-span">—</span>
+    <span id="meta-gen">—</span>
+    <button class="ghost" id="btn-reload" title="Re-read the logs and refresh">Refresh</button>
+  </div>
+</div>
 
-<script>
-const $ = (s,el=document)=>el.querySelector(s);
-const esc = s => String(s??"").replace(/[&<>]/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;"}[c]));
-let charts = [];
+<div class="filters" id="filters">
+  <span class="flabel">Window</span>
+  <div class="seg" id="presets" role="group" aria-label="Date range presets">
+    <button data-days="0"   aria-pressed="true">All</button>
+    <button data-days="1">1D</button>
+    <button data-days="7">1W</button>
+    <button data-days="30">1M</button>
+    <button data-days="90">3M</button>
+    <button data-days="365">1Y</button>
+  </div>
+  <div class="divider"></div>
+  <label class="flabel" for="d-from">From</label>
+  <input type="date" id="d-from">
+  <label class="flabel" for="d-to">To</label>
+  <input type="date" id="d-to">
+  <button class="primary" id="btn-apply">Apply</button>
+  <button class="ghost" id="btn-clear">Clear</button>
+  <div class="divider"></div>
+  <label class="flabel" for="nl">Ask</label>
+  <input type="text" id="nl" placeholder="e.g. 2nd week of April 2022" autocomplete="off">
+  <span class="nlnote" id="nl-note"></span>
+</div>
 
-Chart.defaults.color = "#4a5578";
-Chart.defaults.borderColor = "#dde3ef";
-Chart.defaults.font.family = "Segoe UI, system-ui, sans-serif";
+<main id="main">
+  <section id="strip-sec">
+    <div class="strip" id="strip"></div>
+  </section>
 
-function reload(){ $("#root").innerHTML='<div class="loading">Re-parsing logs…</div>'; load(); }
-
-/* ── Health gauge SVG ──────────────────────────────────────────── */
-function gaugesvg(score){
-  if(score==null) return "";
-  const r=28, cx=36, cy=36, stroke=6;
-  const circ = Math.PI*r; // half-circle arc length
-  const pct = Math.max(0,Math.min(100,score))/100;
-  const filled = pct*circ;
-  const color = score>=70?"#35d6a5":score>=40?"#ffcb5c":"#ff6f8b";
-  return `<svg class="ai-gauge" width="72" height="42" viewBox="0 0 72 42" aria-label="Health score ${Math.round(score)}/100">
-    <path d="M${cx-r},${cy} A${r},${r} 0 0,1 ${cx+r},${cy}"
-      fill="none" stroke="#dde3ef" stroke-width="${stroke}" stroke-linecap="round"/>
-    <path d="M${cx-r},${cy} A${r},${r} 0 0,1 ${cx+r},${cy}"
-      fill="none" stroke="${color}" stroke-width="${stroke}" stroke-linecap="round"
-      stroke-dasharray="${filled} ${circ}" style="transition:stroke-dasharray .6s ease"/>
-    <text x="${cx}" y="${cy-4}" text-anchor="middle" class="ai-gauge-score" fill="${color}">${Math.round(score)}</text>
-    <text x="${cx}" y="${cy+8}" text-anchor="middle" class="ai-gauge-label">/100</text>
-  </svg>`;
-}
-
-function render(d){
-  charts.forEach(c=>c.destroy()); charts = [];
-  $("#gen").textContent = "generated " + (d.generated_at||"");
-  $("#files").textContent = (d.files_read||[]).length + " log file(s)";
-
-  if(!d.has_data){
-    $("#root").innerHTML = '<div class="loading">No parseable dispatcher tasks found in Logs\\.</div>';
-    return;
-  }
-  const k = d.kpis;
-  const inQueueCls = k.in_queue>0 ? "warn":"ok";
-  const termCls    = k.terminal_jobs>0 ? "crit":"ok";
-  const delCls     = k.deleted>0 ? "crit":"ok";
-  const dupCls     = k.duplicate>0 ? "warn":"ok";
-  const otherCls   = "ok";
-  const qCls = k.avg_queue_min>=30 ? "crit" : k.avg_queue_min>=10 ? "warn":"ok";
-  const tCls = k.avg_total_min>=30 ? "crit" : k.avg_total_min>=10 ? "warn":"ok";
-
-  const kpiFilterBar = `<div id="kpi-filter-bar">
-    <div class="kpi-filter-bar">
-      <span class="kpi-filter-label">Range</span>
-      <button class="fbtn active" data-krange="0"   onclick="selectKpiPreset(this)">All</button>
-      <button class="fbtn"        data-krange="1"   onclick="selectKpiPreset(this)">1D</button>
-      <button class="fbtn"        data-krange="7"   onclick="selectKpiPreset(this)">1W</button>
-      <button class="fbtn"        data-krange="30"  onclick="selectKpiPreset(this)">1M</button>
-      <button class="fbtn"        data-krange="365" onclick="selectKpiPreset(this)">1Y</button>
-      <span class="kfi-sep">|</span>
-      <span class="kpi-filter-label">From</span>
-      <input class="kfi-date" type="date" id="kfi-from" oninput="clearKpiPresets()">
-      <span class="kpi-filter-label">To</span>
-      <input class="kfi-date" type="date" id="kfi-to" oninput="clearKpiPresets()">
-      <button class="btn" onclick="applyKpiFilterUI()" style="padding:5px 16px;font-size:12px">Apply</button>
-      <span id="kpi-range-label" style="font-size:11px;color:var(--faint);margin-left:4px"></span>
-    </div>
-    <div class="nl-row">
-      <span class="kpi-filter-label">Natural language</span>
-      <input class="nl-input" id="nl-input" type="text"
-        placeholder="e.g. april 2022 · between april 1 and april 30 2022 · 2nd week of april 2022 · Q1 2023 · last 30 days"
-        oninput="nlPreview()" onkeydown="if(event.key==='Enter')nlApply()">
-      <button class="btn-ghost" onclick="nlApply()" style="font-size:12px;padding:5px 12px">Parse &amp; Apply</button>
-      <span id="nl-feedback"></span>
-    </div>
-  </div>`;
-
-  const kpis = `<div id="kpis-container">${kpiFilterBar}<div id="kpi-tiles" class="kpis">
-    <div class="kpi-row-label">Task counts</div>
-    <div class="kpi"><div class="v">${k.total_tasks}</div><div class="l">Total Tasks</div></div>
-    <div class="kpi ok"><div class="v">${k.completed}</div><div class="l">Completed (${Math.round(k.completed/k.total_tasks*100)||0}%)</div></div>
-    <div class="kpi ${termCls}"><div class="v">${k.terminal_jobs}</div><div class="l">Terminal (${k.terminal_pct}%)</div></div>
-    <div class="kpi ${inQueueCls}"><div class="v">${k.in_queue}</div><div class="l">In Queue (${k.in_queue_pct}%)</div></div>
-    <div class="kpi-row-label">Other states</div>
-    <div class="kpi ${delCls}"><div class="v">${k.deleted}</div><div class="l">Deleted (${k.deleted_pct}%)</div></div>
-    <div class="kpi ${dupCls}"><div class="v">${k.duplicate}</div><div class="l">Duplicate (${k.duplicate_pct}%)</div></div>
-    <div class="kpi"><div class="v">${k.other}</div><div class="l">Other State (${k.other_pct}%)</div></div>
-    <div class="kpi" style="visibility:hidden"></div>
-    <div class="kpi-row-label">Timing averages</div>
-    <div class="kpi ${tCls}"><div class="v">${k.avg_total_min}<small> min</small></div><div class="l">Avg Completion Time</div></div>
-    <div class="kpi ${qCls}"><div class="v">${k.avg_queue_min}<small> min</small></div><div class="l">Avg Queue Time</div></div>
-    <div class="kpi"><div class="v">${k.avg_proc_min}<small> min</small></div><div class="l">Avg Processing Time</div></div>
-    <div class="kpi" style="visibility:hidden"></div>
-  </div></div>`;
-
-  const aiCard = `<div class="card wide ai-card" style="margin-bottom:16px">
-    <div class="ai-head">
-      <h3>AI Insights <span class="sub">Bedrock-generated analysis</span></h3>
-      <div class="ai-head-right">
-        <div id="ai-gauge"></div>
-        <div id="ai-badges" style="display:flex;gap:8px"></div>
-        <button class="btn-ghost" id="ai-copy" onclick="copyAnalysis()" style="display:none">⎘ Copy</button>
-        <button class="btn" id="ai-btn" onclick="loadAnalysis()">✦ Generate</button>
+  <section id="jobs-sec">
+    <div class="shead">
+      <h2>Job types</h2>
+      <span class="hint" id="jobs-hint"></span>
+      <div class="right">
+        <input type="text" id="job-filter" placeholder="Filter job type…" style="width:170px">
+        <label class="flabel" for="job-sort">Sort</label>
+        <select id="job-sort">
+          <option value="severity">Anomaly severity</option>
+          <option value="count">Task volume</option>
+          <option value="terminal">Failure rate</option>
+          <option value="queue">Queue backlog</option>
+          <option value="slow">Median completion</option>
+          <option value="name">Name</option>
+        </select>
+        <div class="seg" role="group" aria-label="Show">
+          <button id="f-all" aria-pressed="true">All</button>
+          <button id="f-flagged" aria-pressed="false">Flagged only</button>
+        </div>
       </div>
     </div>
-    <div class="ai-body-wrap">
-      <div id="ai-body" class="ai-body-collapsed"><div class="ai-empty">Click "Generate" to run an AI analysis of the current statistics.</div></div>
-      <button class="ai-expand-btn" id="ai-expand" onclick="toggleAiExpand()">▼ Expand</button>
+    <div class="jobgrid" id="jobgrid"></div>
+  </section>
+
+  <section id="panel-sec">
+    <div class="card" id="panel"></div>
+  </section>
+
+  <section id="ai-sec">
+    <div class="card aicard">
+      <div class="panel-head">
+        <div>
+          <h2>AI analysis</h2>
+          <div class="panel-sub">Bedrock reading the whole snapshot — health, anomalies, recommendations</div>
+        </div>
+        <div class="right">
+          <button class="ghost" id="btn-ai">Run analysis</button>
+        </div>
+      </div>
+      <div class="body" id="ai-body">
+        <div class="muted" style="font-size:12.5px">Not run yet. This calls the LLM and takes ~10–60 s.</div>
+      </div>
     </div>
-  </div>`;
+  </section>
+</main>
 
+<script>
+/* ═══════════════════════════════════════════════════════════════════════
+   State
+   ═══════════════════════════════════════════════════════════════════════ */
+const S = {
+  from:"", to:"",
+  stats:null,
+  job:null, detail:null,
+  tab:"throughput",
+  sort:"severity", flaggedOnly:false, jobQuery:"",
+  table:{q:"", status:"all", sort:"slowest", offset:0, limit:50, total:0, rows:[], loading:false},
+  rca:{loading:false, data:null, forJob:null},
+  charts:{},
+  loading:false,
+};
 
-  const chartCards = `<div class="grid">
-    <div class="card"><h3>Task status distribution</h3><canvas id="c_status"></canvas></div>
-    <div class="card"><h3>Queue-time distribution</h3><canvas id="c_queue"></canvas></div>
-    <div class="card wide"><h3>Tasks &amp; avg total time by job type</h3><canvas id="c_jobs"></canvas></div>
-    <div class="card"><h3>Tasks by group</h3><canvas id="c_group"></canvas></div>
-    <div class="card"><h3>Top users</h3><canvas id="c_user"></canvas></div>
-    <div class="card wide"><h3>Completions over time <span class="sub">per minute</span>
-      <span class="thru-filters">
-        <button class="fbtn" data-days="1"   onclick="setThruRange(this)">1D</button>
-        <button class="fbtn" data-days="7"   onclick="setThruRange(this)">1W</button>
-        <button class="fbtn" data-days="30"  onclick="setThruRange(this)">1M</button>
-        <button class="fbtn" data-days="90"  onclick="setThruRange(this)">3M</button>
-        <button class="fbtn active" data-days="0" onclick="setThruRange(this)">All</button>
-      </span></h3><canvas id="c_thru"></canvas></div>
-  </div>`;
+const $ = s => document.querySelector(s);
+const el = (id) => document.getElementById(id);
 
-  const tableCard = `<div class="card wide" style="margin-top:16px">
-    <h3>Task detail
-      <button class="btn-ghost" onclick="exportCsv()" style="margin-left:auto">↓ Export CSV</button>
-    </h3>
-    <div class="table-toolbar">
-      <input class="filter" id="flt" placeholder="filter by id / job / user…" oninput="filterTable()">
-      <button class="sfbtn active" data-sf="all"       onclick="setStatusFilter(this)">All</button>
-      <button class="sfbtn"        data-sf="COMPLETE"  onclick="setStatusFilter(this)">Complete</button>
-      <button class="sfbtn"        data-sf="SCHEDULED" onclick="setStatusFilter(this)">Scheduled</button>
-      <button class="sfbtn"        data-sf="TERMINAL"  onclick="setStatusFilter(this)">Terminal</button>
-    </div>
-    <div class="tablewrap"><table id="tbl"><thead><tr>
-      <th>Task ID</th><th>Job</th><th>User</th><th>Group</th><th>Status</th>
-      <th>Queue (m)</th><th>Proc (m)</th><th>Total (m)</th><th>Initial</th><th>End</th>
-    </tr></thead><tbody>${taskRows(d.tasks)}</tbody></table></div>
-  </div>`;
+/* ═══ formatting ═══════════════════════════════════════════════════════ */
+const esc = s => String(s==null?"":s).replace(/[&<>"']/g, c =>
+  ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
+const n0 = v => (v==null?"—":Number(v).toLocaleString());
+const compact = v => {
+  if(v==null) return "—";
+  const n = Number(v);
+  if(Math.abs(n)>=1e6) return (n/1e6).toFixed(1).replace(/\.0$/,"")+"M";
+  if(Math.abs(n)>=10000) return (n/1e3).toFixed(1).replace(/\.0$/,"")+"K";
+  return n.toLocaleString();
+};
+const pct = v => v==null ? "—" : `${Number(v).toFixed(1)}%`;
+/** Minutes → readable duration. 706622 min is not a number anyone can read. */
+function dur(v){
+  if(v==null || v==="") return "—";
+  const m = Math.round(Number(v));
+  if(!isFinite(m)) return "—";
+  if(m <= 0) return "0m";
+  if(m < 60) return m+"m";
+  if(m < 1440){ const h=Math.floor(m/60), r=m%60; return r? `${h}h ${r}m` : `${h}h`; }
+  const d=Math.floor(m/1440), h=Math.round((m%1440)/60);
+  return h? `${d}d ${h}h` : `${d}d`;
+}
+const durShort = v => {
+  if(v==null) return "";
+  const m=Math.round(Number(v));
+  if(m<60) return m+"m";
+  if(m<1440) return (m/60).toFixed(m<600?1:0)+"h";
+  return (m/1440).toFixed(m<14400?1:0)+"d";
+};
+const SEV = {
+  critical:{cls:"critical", g:"✕", label:"CRITICAL", rank:4},
+  high:    {cls:"serious",  g:"▲", label:"HIGH",     rank:3},
+  medium:  {cls:"warning",  g:"△", label:"WARN",     rank:2},
+  low:     {cls:"info",     g:"ℹ", label:"INFO",     rank:1},
+  ok:      {cls:"good",     g:"✓", label:"OK",       rank:0},
+};
+const sev = s => SEV[s] || SEV.ok;
+function sevChip(s, count){
+  const d = sev(s);
+  const n = count ? ` ${count}` : "";
+  return `<span class="chip ${d.cls}"><span class="g" aria-hidden="true">${d.g}</span>${d.label}${n}</span>`;
+}
+const ANOM = {
+  terminal_spike:"failure spike", queue_backlog:"queue backlog",
+  latency_drift:"slower than before", latency_outlier:"slower than peers",
+  stalled_tasks:"stalled tasks", high_variance:"unstable runtime",
+};
+const CAT = {capacity:"capacity", configuration:"configuration", input_data:"input data",
+  dependency:"dependency", scheduling:"scheduling", infrastructure:"infrastructure",
+  user_behaviour:"user behaviour", unknown:"unknown"};
+const HORIZON = {immediate:"Do now", short_term:"Short term", preventive:"Prevent recurrence"};
+const PRIO_CLS = {critical:"critical", high:"serious", medium:"warning", low:"info"};
 
-  $("#root").innerHTML = kpis + aiCard + chartCards + tableCard;
-  window._tasks = d.tasks;
-  window._filteredTasks = d.tasks;
-  window._statusFilter = "all";
-  draw(d);
+/* ═══ Chart.js house style ═════════════════════════════════════════════ */
+const C = {blue:"#2a78d6", red:"#d03b3b", amber:"#eda100", violet:"#4a3aa7",
+  orange:"#eb6834", ramp:["#86b6ef","#2a78d6","#184f95","#0d366b"],
+  grid:"#ececE8", ink2:"#57564f", ink3:"#8a8880", line:"#d6d5cf"};
+
+Chart.defaults.font.family = '"Segoe UI",system-ui,-apple-system,sans-serif';
+Chart.defaults.font.size = 11;
+Chart.defaults.color = C.ink3;
+Chart.defaults.maintainAspectRatio = false;
+Chart.defaults.animation.duration = 260;
+Chart.defaults.elements.line.borderWidth = 2;
+Chart.defaults.elements.line.tension = .25;
+Chart.defaults.elements.point.radius = 0;
+Chart.defaults.elements.point.hoverRadius = 4.5;
+Chart.defaults.elements.point.hitRadius = 22;
+/* Bar geometry is a *dataset* option in Chart.js 4, not an element default, so
+   it is applied per dataset via BAR below. Nested default objects are only ever
+   patched leaf-by-leaf: replacing plugins.legend.labels wholesale drops
+   Chart.js' own generateLabels() and the legend silently disappears. */
+const BAR = {maxBarThickness:24, borderRadius:4, borderSkipped:"start"};
+/** 2px surface gap on the data end of a stacked segment. */
+const GAP_TOP = {borderColor:"#ffffff", borderWidth:{top:2, right:0, bottom:0, left:0}};
+Chart.defaults.plugins.legend.position = "top";
+Chart.defaults.plugins.legend.align = "end";
+Object.assign(Chart.defaults.plugins.legend.labels, {
+  usePointStyle:true, pointStyle:"rectRounded", boxWidth:8, boxHeight:8,
+  padding:14, color:C.ink2, font:{size:11},
+});
+Object.assign(Chart.defaults.plugins.tooltip, {
+  backgroundColor:"#ffffff", titleColor:"#1b1b19", bodyColor:"#1b1b19",
+  borderColor:C.line, borderWidth:1, cornerRadius:6, padding:10, caretSize:5,
+  displayColors:true, usePointStyle:true, boxWidth:8, boxHeight:8, boxPadding:4,
+  titleFont:{size:11, weight:"600"}, bodyFont:{size:12},
+});
+
+/** Vertical hairline under the cursor on time series. */
+Chart.register({
+  id:"crosshair",
+  afterDatasetsDraw(c){
+    if(c.config.type !== "line") return;
+    const act = c.tooltip && c.tooltip._active;
+    if(!act || !act.length) return;
+    const g = c.ctx, x = act[0].element.x;
+    g.save(); g.beginPath(); g.lineWidth = 1; g.strokeStyle = "#c9c8c2";
+    g.moveTo(x, c.chartArea.top); g.lineTo(x, c.chartArea.bottom); g.stroke(); g.restore();
+  },
+});
+/** Selective direct labels at the data end — opt in per chart. */
+Chart.register({
+  id:"valueLabels",
+  afterDatasetsDraw(c, _a, opts){
+    if(!opts || !opts.enabled) return;
+    const fmt = opts.format || (v => n0(v));
+    const horiz = c.options.indexAxis === "y";
+    const g = c.ctx;
+    g.save();
+    g.font = '600 11px ' + Chart.defaults.font.family;
+    g.fillStyle = C.ink2;
+    c.data.datasets.forEach((ds, i) => {
+      if(!c.isDatasetVisible(i)) return;
+      c.getDatasetMeta(i).data.forEach((mark, j) => {
+        const v = ds.data[j];
+        if(v == null || v === 0) return;
+        g.textAlign = horiz ? "left" : "center";
+        g.textBaseline = horiz ? "middle" : "bottom";
+        g.fillText(fmt(v), mark.x + (horiz ? 7 : 0), mark.y + (horiz ? 0 : -5));
+      });
+    });
+    g.restore();
+  },
+});
+
+const AX = {                                        // recessive grid, one axis
+  y:{grid:{color:C.grid, drawTicks:false}, border:{display:false},
+     ticks:{padding:6, maxTicksLimit:6}},
+  x:{grid:{display:false}, border:{color:C.line},
+     ticks:{padding:4, maxRotation:0, autoSkipPadding:14}},
+};
+const yCat = {grid:{display:false}, border:{display:false}, ticks:{padding:4, font:{size:11}}};
+const xNum = {grid:{color:C.grid, drawTicks:false}, border:{display:false},
+              ticks:{padding:4, maxTicksLimit:5}};
+
+function destroyCharts(){ Object.values(S.charts).forEach(c => c.destroy()); S.charts = {}; }
+function mkChart(id, cfg){
+  const cv = el(id);
+  if(!cv) return;
+  if(S.charts[id]) S.charts[id].destroy();
+  S.charts[id] = new Chart(cv, cfg);
+}
+/** figure + canvas + a "Data table" disclosure, so every chart has a table view. */
+function chartCard(id, title, note, opts={}){
+  return `<figure class="chart${opts.span?" span":""}">
+    <figcaption><h3>${esc(title)}</h3>${note?`<p class="note">${esc(note)}</p>`:""}</figcaption>
+    <div class="cwrap${opts.h?" "+opts.h:""}"><canvas id="${id}"></canvas></div>
+    <details class="dt"><summary>Data table</summary><div class="scroll" id="${id}-dt"></div></details>
+  </figure>`;
+}
+function fillTable(id, cols, rows){
+  const holder = el(id+"-dt");
+  if(!holder) return;
+  holder.innerHTML = `<table><thead><tr>${
+    cols.map((c,i)=>`<th${i?' class="n"':""}>${esc(c)}</th>`).join("")
+  }</tr></thead><tbody>${
+    rows.map(r=>`<tr>${r.map((v,i)=>`<td${i?' class="n"':""}>${esc(v)}</td>`).join("")}</tr>`).join("")
+  }</tbody></table>`;
+}
+const BUCKET_WORD = {minute:"minute", hour:"hour", day:"day", month:"month"};
+
+/* ═══════════════════════════════════════════════════════════════════════
+   Data loading
+   ═══════════════════════════════════════════════════════════════════════ */
+function qs(extra={}){
+  const p = new URLSearchParams();
+  if(S.from) p.set("from", S.from);
+  if(S.to)   p.set("to", S.to);
+  Object.entries(extra).forEach(([k,v]) => { if(v!=null && v!=="") p.set(k, v); });
+  return p.toString();
+}
+function busy(on){ S.loading = on; el("main").classList.toggle("busy", on); }
+
+async function getJSON(url){
+  const r = await fetch(url);
+  const data = await r.json().catch(() => ({error:`HTTP ${r.status}`}));
+  if(!r.ok) throw new Error(data.error || `HTTP ${r.status}`);
+  return data;
 }
 
-/* ── AI expand/collapse ────────────────────────────────────────── */
-function toggleAiExpand(){
-  const body = $("#ai-body"), btn = $("#ai-expand");
-  const collapsed = body.classList.toggle("ai-body-collapsed");
-  btn.textContent = collapsed ? "▼ Expand" : "▲ Collapse";
+/** Refetch the window. The previous render stays on screen, dimmed. */
+async function loadStats(){
+  busy(true);
+  try{
+    S.stats = await getJSON("/api/stats?" + qs());
+    if(S.job && !S.stats.job_health.some(j => j.job === S.job)) selectJob(null, {silent:true});
+    renderMeta(); renderStrip(); renderJobs();
+    if(S.job) await loadJob(S.job, {keepTab:true});
+    else renderPanel();
+  }catch(e){
+    el("strip").innerHTML = `<div class="st" style="grid-column:1/-1"><div class="k">Error</div>
+      <div class="v" style="font-size:14px">${esc(e.message)}</div></div>`;
+  }finally{ busy(false); }
 }
 
-/* ── Copy analysis to clipboard ────────────────────────────────── */
-function copyAnalysis(){
-  const text = window._lastAnalysisText||"";
-  if(!text) return;
-  navigator.clipboard.writeText(text).then(()=>{
-    const btn = $("#ai-copy");
-    btn.textContent = "✓ Copied";
-    setTimeout(()=>{ btn.textContent = "⎘ Copy"; }, 2000);
-  });
+async function loadJob(job, {keepTab=false}={}){
+  busy(true);
+  try{
+    S.detail = await getJSON("/api/job?" + qs({job}));
+    S.job = job;
+    if(!keepTab) S.tab = "throughput";
+    S.rca = {loading:false, data:null, forJob:null};
+    renderJobs(); renderPanel();
+  }catch(e){
+    S.detail = null; S.job = null;
+    renderJobs();
+    el("panel").innerHTML = `<div class="empty">${esc(e.message)}</div>`;
+  }finally{ busy(false); }
 }
 
-/* ── Load AI analysis ──────────────────────────────────────────── */
-function loadAnalysis(){
-  const btn = $("#ai-btn"), body = $("#ai-body"), badges = $("#ai-badges"),
-        expand = $("#ai-expand"), copyBtn = $("#ai-copy"), gauge = $("#ai-gauge");
-  btn.disabled = true; btn.textContent = "Analyzing…";
-  badges.innerHTML = "";
-  gauge.innerHTML = "";
-  copyBtn.style.display = "none";
-  body.classList.add("ai-body-collapsed");
-  expand.textContent = "▼ Expand";
-  body.innerHTML = '<div class="ai-empty">Running LangGraph analysis via Bedrock… this can take a few seconds.</div>';
+/* ── deep links: the selected job, tab and window live in the URL hash ── */
+let hashSelf = false, hashRCA = null;
+function syncHash(){
+  const p = new URLSearchParams();
+  if(S.job) p.set("job", S.job);
+  if(S.tab !== "throughput") p.set("tab", S.tab);
+  if(S.from) p.set("from", S.from);
+  if(S.to) p.set("to", S.to);
+  const h = p.toString();
+  if(h !== location.hash.replace(/^#/, "")){ hashSelf = true; location.hash = h; }
+}
+function readHash(){
+  const p = new URLSearchParams(location.hash.replace(/^#/, ""));
+  S.from = p.get("from") || "";
+  S.to   = p.get("to")   || "";
+  const tab = p.get("tab");
+  if(["throughput","dist","tasks","rca"].includes(tab)) S.tab = tab;
+  hashRCA = p.get("rca");
+  return p.get("job") || null;
+}
 
-  // Build URL with active date filter so AI analyses the same window shown on the dashboard.
-  const params = new URLSearchParams();
-  const activePreset = document.querySelector("#kpi-filter-bar .fbtn.active");
-  if(activePreset){
-    const days = parseInt(activePreset.dataset.krange, 10);
-    if(days > 0){
-      const from = new Date(Date.now() - days*24*60*60*1000);
-      params.set("from", from.toISOString().slice(0,10));
-    }
-  } else {
-    const from = $("#kfi-from")?.value, to = $("#kfi-to")?.value;
-    if(from) params.set("from", from);
-    if(to)   params.set("to",   to);
+function selectJob(job, {tab=null, silent=false, autoRCA=false}={}){
+  if(job === null){
+    S.job = null; S.detail = null; S.tab = "throughput";
+    S.table = {...S.table, offset:0, q:"", status:"all"};
+    if(!silent){ renderJobs(); renderPanel(); }
+    return;
   }
-  const url = "/api/analysis" + (params.toString() ? "?"+params : "");
-
-  fetch(url).then(r=>r.json()).then(a=>{
-    btn.disabled = false; btn.textContent = "↻ Regenerate";
-    renderAnalysis(a, badges, body, gauge, copyBtn);
-  }).catch(e=>{
-    btn.disabled = false; btn.textContent = "✦ Generate";
-    body.innerHTML = `<div class="ai-error">Failed to load AI analysis: ${esc(e)}</div>`;
+  if(S.job === job && !tab){ selectJob(null); return; }   // click again to close
+  S.table = {...S.table, offset:0, q:"", status:"all"};
+  return loadJob(job).then(() => {
+    if(tab){ S.tab = tab; renderPanel(); }
+    if(autoRCA && S.tab === "rca") runRCA();
+    if(!silent) el("panel-sec").scrollIntoView({behavior:"smooth", block:"start"});
   });
 }
 
-/* ── Render analysis result ────────────────────────────────────── */
-function renderAnalysis(a, badges, body, gauge, copyBtn){
-  if(a.status === "error"){
-    badges.innerHTML = "";
-    body.innerHTML = `<div class="ai-error">${esc(a.error||"Analysis failed.")}</div>`;
+/* ═══════════════════════════════════════════════════════════════════════
+   Header meta + system strip
+   ═══════════════════════════════════════════════════════════════════════ */
+function renderMeta(){
+  const s = S.stats, span = s.data_span || {};
+  el("meta-files").textContent = `${(s.files_read||[]).length} log file(s)`;
+  el("meta-span").textContent = span.from ? `data ${span.from} → ${span.to}` : "no data";
+  el("meta-gen").textContent = s.generated_at ? `read ${s.generated_at}` : "";
+}
+
+function renderStrip(){
+  const s = S.stats, k = s.kpis, b = s.baselines || {};
+  const win = (S.from || S.to) ? `${S.from||"start"} → ${S.to||"end"}` : "all logged time";
+  const tiles = [
+    {k:"Tasks in window", v:n0(k.total_tasks), s:win, hero:true},
+    {k:"Completed",  v:n0(k.completed),     s:`${pct(b.completed_pct)} of tasks`},
+    {k:"Terminal",   v:n0(k.terminal_jobs), s:`${pct(k.terminal_pct)} of tasks`},
+    {k:"In queue",   v:n0(k.in_queue),           s:`${pct(k.in_queue_pct)} · never picked up`},
+    {k:"Mid-flight", v:n0(k.other),              s:"translating / loading"},
+    {k:"Median completion", v:dur(b.p50_total),  s:`p95 ${dur(b.p95_total)}`},
+    {k:"Median queue wait", v:dur(b.p50_queue),  s:`avg processing ${dur(k.avg_proc_min)}`},
+    {k:"Anomaly signals", v:n0(s.anomaly_total),
+     s:`${s.anomalous_jobs} of ${b.job_types} job types`,
+     chip:s.anomaly_total ? sevChip(s.worst_severity) : sevChip("ok")},
+  ];
+  el("strip").innerHTML = tiles.map(t => `<div class="st${t.hero?" hero":""}">
+      <div class="k">${esc(t.k)}</div>
+      <div class="v">${t.v}</div>
+      <div class="s">${t.chip ? t.chip : esc(t.s)}</div>
+    </div>`).join("");
+}
+
+/* ═══════════════════════════════════════════════════════════════════════
+   Job indicator boxes
+   ═══════════════════════════════════════════════════════════════════════ */
+const JOB_SORTS = {
+  severity: (a,b) => sev(b.severity).rank - sev(a.severity).rank || b.count - a.count,
+  count:    (a,b) => b.count - a.count,
+  terminal: (a,b) => b.terminal_pct - a.terminal_pct || b.terminal - a.terminal,
+  queue:    (a,b) => b.in_queue - a.in_queue || b.in_queue_pct - a.in_queue_pct,
+  slow:     (a,b) => b.p50_total - a.p50_total,
+  name:     (a,b) => a.job.localeCompare(b.job),
+};
+
+function sparkSVG(spark, job){
+  const pts = spark || [];
+  if(!pts.length) return "";
+  const max = Math.max(1, ...pts.map(p => p.n));
+  const W = 4, G = 1, H = 24;
+  const bars = pts.map((p,i) => {
+    const x = i*(W+G);
+    const h = p.n ? Math.max(1, Math.round(p.n / max * H)) : 0;
+    const fh = p.fail ? Math.max(1, Math.round(p.fail / max * H)) : 0;
+    let out = "";
+    if(h) out += `<rect x="${x}" y="${H-h}" width="${W}" height="${h}" fill="var(--c-spark)"/>`;
+    if(fh) out += `<rect x="${x}" y="${H-fh}" width="${W}" height="${fh}" fill="var(--c-terminal)"/>`;
+    return out;
+  }).join("");
+  const total = pts.reduce((a,p)=>a+p.n,0), fails = pts.reduce((a,p)=>a+p.fail,0);
+  return `<svg class="jb-spark" viewBox="0 0 ${pts.length*(W+G)} ${H}" preserveAspectRatio="none"
+    role="img" aria-label="Volume over the window for ${esc(job)}: ${total} tasks, ${fails} failed">
+    ${bars}</svg>`;
+}
+
+function jobBox(j){
+  const d = sev(j.severity);
+  const flagged = j.anomaly_count > 0;
+  const total = Math.max(1, j.count);
+  /* DELETE and DUPLICATE are neither success nor failure — they get the
+     neutral slot, not the red one, and they are named in the legend so the
+     four numbers always add up to the task total. */
+  const dropped = (j.deleted||0) + (j.duplicate||0);
+  const segs = [
+    {n:j.completed, c:"var(--c-complete)", label:"completed"},
+    {n:j.terminal,  c:"var(--c-terminal)", label:"failed"},
+    {n:j.in_queue,  c:"var(--c-queued)",   label:"queued"},
+    {n:j.active,    c:"var(--c-active)",   label:"mid-flight"},
+    {n:dropped,     c:"#a9a8a1",           label:"cancelled or duplicate"},
+  ].filter(x => x.n > 0);
+  const share = S.stats.kpis.total_tasks ? (j.count / S.stats.kpis.total_tasks * 100) : 0;
+  const timing = j.timed
+    ? `<span>p50 <b>${dur(j.p50_total)}</b></span>
+       <span>p95 <b>${dur(j.p95_total)}</b></span>
+       <span>queue share <b>${j.queue_share.toFixed(0)}%</b></span>`
+    : `<span class="muted">no completion times recorded</span>`;
+
+  const flags = (j.anomalies||[]).map(a =>
+    `<span class="chip flag ${sev(a.severity).cls}"
+       ><span class="g" aria-hidden="true">${sev(a.severity).g}</span>${esc(ANOM[a.type]||a.type)}</span>`).join("");
+
+  return `<article class="jbox sev-${esc(j.severity)}${flagged?" flagged":""}" role="button" tabindex="0"
+      data-job="${esc(j.job)}" aria-pressed="${S.job===j.job}"
+      aria-label="${esc(j.job)}: ${j.count} tasks, ${flagged?`${j.anomaly_count} anomaly signals, severity ${j.severity}`:"no anomalies"}">
+    <div class="jb-top">
+      <span class="jb-name">${esc(j.job)}</span>
+      <span class="jb-sev">${sevChip(j.severity, flagged ? j.anomaly_count : 0)}</span>
+    </div>
+    <div class="jb-fig">
+      <span class="n">${n0(j.count)}</span><span class="u">tasks</span>
+      <span class="share">${share.toFixed(1)}% of window</span>
+    </div>
+    <div class="meter" role="img" aria-label="${segs.map(s=>`${s.n} ${s.label}`).join(", ")}">
+      ${segs.map(s=>`<i style="width:${(s.n/total*100).toFixed(2)}%;background:${s.c}"></i>`).join("")}
+    </div>
+    <div class="jb-legend">
+      <span><i class="dot d-complete"></i><b>${n0(j.completed)}</b> done</span>
+      <span><i class="dot d-terminal"></i><b>${n0(j.terminal)}</b> failed</span>
+      <span><i class="dot d-queued"></i><b>${n0(j.in_queue)}</b> queued</span>
+      <span><i class="dot d-active"></i><b>${n0(j.active)}</b> running</span>
+      ${dropped?`<span><i class="dot d-dropped"></i><b>${n0(dropped)}</b> cancelled</span>`:""}
+    </div>
+    <div class="jb-stats">
+      ${timing}
+      <span>fail <b>${pct(j.terminal_pct)}</b></span>
+    </div>
+    ${sparkSVG(j.spark, j.job)}
+    ${flagged
+      ? `<div class="jb-flags">${flags}<span class="jb-cta" data-goto="rca">Why? →</span></div>`
+      : `<div class="jb-ok">No anomaly signals for this job type.</div>`}
+  </article>`;
+}
+
+function renderJobs(){
+  const all = S.stats.job_health || [];
+  const q = S.jobQuery.trim().toLowerCase();
+  let list = all.filter(j => !S.flaggedOnly || j.anomaly_count > 0)
+                .filter(j => !q || j.job.toLowerCase().includes(q));
+  list = [...list].sort(JOB_SORTS[S.sort] || JOB_SORTS.severity);
+
+  el("jobs-hint").textContent =
+    `${list.length} of ${all.length} shown · ${S.stats.anomalous_jobs} flagged · ` +
+    `click a box to drill down`;
+  el("jobgrid").innerHTML = list.length
+    ? list.map(jobBox).join("")
+    : `<div class="card empty" style="grid-column:1/-1">No job type matches this filter.</div>`;
+  el("f-all").setAttribute("aria-pressed", String(!S.flaggedOnly));
+  el("f-flagged").setAttribute("aria-pressed", String(S.flaggedOnly));
+}
+
+/* ═══════════════════════════════════════════════════════════════════════
+   Drill-down panel — scoped to one job, or to the whole system
+   ═══════════════════════════════════════════════════════════════════════ */
+function scope(){
+  if(S.job && S.detail){
+    const m = S.detail.metrics;
+    return {job:S.job, m, anomalies:S.detail.anomalies||[], severity:S.detail.severity,
+            throughput:S.detail.throughput, d:S.detail, count:m.count};
+  }
+  const s = S.stats, k = s.kpis, b = s.baselines;
+  return {job:null, m:null, anomalies:[], severity:s.worst_severity,
+          throughput:s.throughput, d:null, count:k.total_tasks, k, b};
+}
+
+function renderPanel(){
+  destroyCharts();
+  syncHash();
+  const sc = scope();
+  const p = el("panel");
+  const tabs = [
+    {id:"throughput", label:"Throughput analysis"},
+    {id:"dist",       label:"Distributions"},
+    {id:"tasks",      label:"Task details", cnt:n0(sc.count)},
+    {id:"rca",        label:sc.job ? "Anomalies & RCA" : "Anomaly board",
+     cnt: sc.job ? (sc.anomalies.length || 0) : S.stats.anomaly_total},
+  ];
+  if(!["throughput","dist","tasks","rca"].includes(S.tab)) S.tab = "throughput";
+
+  let head;
+  if(sc.job){
+    const m = sc.m;
+    head = `<div class="panel-head">
+      <div>
+        <h2>${esc(sc.job)} ${sevChip(sc.severity, sc.anomalies.length)}</h2>
+        <div class="panel-sub">${n0(m.count)} tasks · ${esc(m.first_seen)} → ${esc(m.last_seen)}
+          · p50 ${dur(m.p50_total)} · p95 ${dur(m.p95_total)} · ${m.queue_share.toFixed(0)}% of elapsed time is queue wait</div>
+      </div>
+      <div class="right">
+        <button class="ghost" id="btn-close-job">Close ✕</button>
+      </div>
+    </div>`;
+  }else{
+    head = `<div class="panel-head">
+      <div>
+        <h2>All job types</h2>
+        <div class="panel-sub">System view · ${n0(sc.count)} tasks · select a job box above to scope this panel</div>
+      </div>
+    </div>`;
+  }
+
+  p.innerHTML = head + `<div class="tabs" role="tablist">${
+    tabs.map(t => `<button role="tab" data-tab="${t.id}" aria-selected="${S.tab===t.id}"
+      >${esc(t.label)}${t.cnt!=null?`<span class="cnt">${t.cnt}</span>`:""}</button>`).join("")
+  }</div><div class="tabbody" id="tabbody"></div>`;
+
+  const body = el("tabbody");
+  if(S.tab === "throughput") renderThroughput(body, sc);
+  if(S.tab === "dist")       renderDist(body, sc);
+  if(S.tab === "tasks")      renderTasks(body, sc);
+  if(S.tab === "rca")        renderRCA(body, sc);
+}
+
+/* ── tab 1: throughput analysis ─────────────────────────────────────── */
+function renderThroughput(body, sc){
+  const tp = sc.throughput || {points:[], bucket:"day"};
+  const pts = tp.points || [];
+  if(!pts.length){ body.innerHTML = `<div class="empty">No completed tasks in this window.</div>`; return; }
+  const unit = BUCKET_WORD[tp.bucket] || tp.bucket;
+
+  body.innerHTML = `<div class="grid2">
+    ${chartCard("c-tp", `Tasks reaching an end state per ${unit}`,
+      `${pts.length} ${unit} buckets · bucket width follows the window length`, {span:true, h:"tall"})}
+    ${chartCard("c-lat", `Completion time per ${unit}`, "Mean and 95th percentile of INITIAL → end")}
+    ${chartCard("c-split", "Where the elapsed time goes",
+      "Mean queue wait and mean translation time, stacked to the mean total")}
+  </div>`;
+
+  const labels = pts.map(p => p.t);
+
+  mkChart("c-tp", {
+    type:"bar",
+    data:{labels, datasets:[
+      {label:"Completed", data:pts.map(p=>p.ok), backgroundColor:C.blue, stack:"s", ...BAR, ...GAP_TOP},
+      {label:"Failed", data:pts.map(p=>p.fail), backgroundColor:C.red, stack:"s", ...BAR},
+    ]},
+    options:{scales:{x:{...AX.x, stacked:true},
+                     y:{...AX.y, stacked:true, title:{display:true, text:"tasks", color:C.ink3}}},
+      interaction:{mode:"index", intersect:false},
+      plugins:{tooltip:{callbacks:{
+        footer:it => `total ${n0(it.reduce((a,x)=>a+x.parsed.y,0))} tasks`,
+        label:c => ` ${n0(c.parsed.y)} ${c.dataset.label.toLowerCase()}`}}}},
+  });
+  fillTable("c-tp", [unit, "Completed", "Failed", "Total"],
+    pts.map(p => [p.t, n0(p.ok), n0(p.fail), n0(p.count)]));
+
+  mkChart("c-lat", {
+    type:"line",
+    data:{labels, datasets:[
+      {label:"Mean", data:pts.map(p=>p.avg_total), borderColor:C.blue,
+       backgroundColor:"rgba(42,120,214,.10)", fill:true},
+      {label:"p95",  data:pts.map(p=>p.p95_total), borderColor:C.orange, borderDash:[4,3]},
+    ]},
+    options:{interaction:{mode:"index", intersect:false},
+      scales:{x:AX.x, y:{...AX.y, ticks:{...AX.y.ticks, callback:v=>durShort(v)},
+                         title:{display:true, text:"elapsed", color:C.ink3}}},
+      plugins:{tooltip:{callbacks:{label:c => ` ${dur(c.parsed.y)} ${c.dataset.label}`}}}},
+  });
+  fillTable("c-lat", [unit, "Mean", "p95"], pts.map(p => [p.t, dur(p.avg_total), dur(p.p95_total)]));
+
+  mkChart("c-split", {
+    type:"line",
+    data:{labels, datasets:[
+      {label:"Queue wait", data:pts.map(p=>p.avg_queue), borderColor:C.blue,
+       backgroundColor:"rgba(42,120,214,.14)", fill:true},
+      {label:"Translation", data:pts.map(p=>p.avg_proc), borderColor:C.orange,
+       backgroundColor:"rgba(235,104,52,.14)", fill:true},
+    ]},
+    options:{interaction:{mode:"index", intersect:false},
+      scales:{x:AX.x, y:{...AX.y, stacked:true, ticks:{...AX.y.ticks, callback:v=>durShort(v)},
+                         title:{display:true, text:"mean minutes", color:C.ink3}}},
+      plugins:{tooltip:{callbacks:{label:c => ` ${dur(c.parsed.y)} ${c.dataset.label.toLowerCase()}`}}}},
+  });
+  fillTable("c-split", [unit, "Queue wait", "Translation", "Total"],
+    pts.map(p => [p.t, dur(p.avg_queue), dur(p.avg_proc), dur(p.avg_total)]));
+}
+
+/* ── tab 2: distributions ───────────────────────────────────────────── */
+function hbar(id, rows, {label, color=C.blue, fmt=n0}={}){
+  mkChart(id, {
+    type:"bar",
+    data:{labels:rows.map(r=>r[0]),
+          datasets:[{label, data:rows.map(r=>r[1]), backgroundColor:color, ...BAR}]},
+    options:{indexAxis:"y", layout:{padding:{right:52}},
+      scales:{y:yCat, x:{...xNum, ticks:{...xNum.ticks, callback:v=>compact(v)}}},
+      plugins:{legend:{display:false}, valueLabels:{enabled:true, format:fmt},
+        tooltip:{callbacks:{label:c => ` ${fmt(c.parsed.x)} — ${c.label}`}}}},
+  });
+}
+
+function renderDist(body, sc){
+  if(sc.job) return renderDistJob(body, sc);
+
+  const s = S.stats;
+  body.innerHTML = `<div class="grid2">
+    ${chartCard("c-out", "Outcome mix", "Every task's last recorded state")}
+    ${chartCard("c-q", "Queue wait distribution", "INITIAL → TRANSLATING, in minutes")}
+    ${chartCard("c-jobs", "Tasks by job type", "Top 12 by volume · click a bar to drill down", {h:"tall"})}
+    ${chartCard("c-jobslow", "Median completion by job type", "Top 12 slowest · p50 of INITIAL → end", {h:"tall"})}
+    ${chartCard("c-users", "Top submitters", "Top 10 users by task count")}
+    ${chartCard("c-groups", "Submitting groups", "Task count per group")}
+  </div>`;
+
+  const out = s.status_distribution || [];
+  hbar("c-out", out.map(r => [r.status, r.count]), {label:"Tasks"});
+  fillTable("c-out", ["State", "Tasks", "Share"],
+    out.map(r => [r.status, n0(r.count), pct(r.count / Math.max(1,s.kpis.total_tasks) * 100)]));
+
+  const qd = s.queue_distribution || [];
+  mkChart("c-q", {
+    type:"bar",
+    data:{labels:qd.map(r=>r.range+" min"),
+          datasets:[{label:"Tasks", data:qd.map(r=>r.count),
+            backgroundColor:qd.map((_,i)=>C.ramp[Math.min(i, C.ramp.length-1)]),
+            ...BAR}]},
+    options:{layout:{padding:{top:18}},
+      scales:{x:AX.x, y:{...AX.y, ticks:{...AX.y.ticks, callback:v=>compact(v)}}},
+      plugins:{legend:{display:false}, valueLabels:{enabled:true},
+        tooltip:{callbacks:{label:c => ` ${n0(c.parsed.y)} tasks waited ${c.label}`}}}},
+  });
+  fillTable("c-q", ["Queue wait", "Tasks"], qd.map(r => [r.range+" min", n0(r.count)]));
+
+  const jb = [...(s.job_breakdown||[])].sort((a,b)=>b.count-a.count).slice(0,12);
+  hbar("c-jobs", jb.map(r => [r.job, r.count]), {label:"Tasks"});
+  if(S.charts["c-jobs"]){
+    const ch = S.charts["c-jobs"];
+    ch.options.onClick = (_e, act) => { if(act.length) selectJob(jb[act[0].index].job); };
+    ch.options.onHover = (e, act) => { e.native.target.style.cursor = act.length ? "pointer" : "default"; };
+    ch.update("none");
+  }
+  fillTable("c-jobs", ["Job type", "Tasks", "Mean queue", "Mean translation"],
+    jb.map(r => [r.job, n0(r.count), dur(r.avg_queue), dur(r.avg_proc)]));
+
+  const slow = [...(s.job_health||[])].filter(j=>j.p50_total>0)
+    .sort((a,b)=>b.p50_total-a.p50_total).slice(0,12);
+  hbar("c-jobslow", slow.map(j => [j.job, j.p50_total]),
+       {label:"Median completion", fmt:v=>dur(v)});
+  fillTable("c-jobslow", ["Job type", "p50", "p95", "Tasks"],
+    slow.map(j => [j.job, dur(j.p50_total), dur(j.p95_total), n0(j.count)]));
+
+  const us = s.user_distribution || [];
+  hbar("c-users", us.map(r => [r.user, r.count]), {label:"Tasks"});
+  fillTable("c-users", ["User", "Tasks"], us.map(r => [r.user, n0(r.count)]));
+
+  const gs = s.group_distribution || [];
+  hbar("c-groups", gs.map(r => [r.group, r.count]), {label:"Tasks"});
+  fillTable("c-groups", ["Group", "Tasks"], gs.map(r => [r.group, n0(r.count)]));
+}
+
+function renderDistJob(body, sc){
+  const d = sc.d, m = sc.m;
+  body.innerHTML = `<div class="grid2">
+    ${chartCard("c-out", "Outcome mix", "Last recorded state of every task of this job type")}
+    ${chartCard("c-q", "Queue wait distribution", "INITIAL → TRANSLATING, in minutes")}
+    ${chartCard("c-proc", "Translation time distribution", "TRANSLATING → end state, in minutes")}
+    ${chartCard("c-hour", "Submissions and failures by hour of day",
+      "Local hour of the INITIAL transition")}
+    ${chartCard("c-users", "Top submitters", "Users submitting this job type")}
+    ${chartCard("c-prov", "Providers and groups", "Who ran it and for whom")}
+  </div>`;
+
+  const out = d.status_distribution || [];
+  hbar("c-out", out.map(r => [r.status, r.count]), {label:"Tasks"});
+  fillTable("c-out", ["State", "Tasks", "Share"],
+    out.map(r => [r.status, n0(r.count), pct(r.count / Math.max(1,m.count) * 100)]));
+
+  const qd = d.queue_distribution || [];
+  mkChart("c-q", {
+    type:"bar",
+    data:{labels:qd.map(r=>r.range+" min"),
+          datasets:[{label:"Tasks", data:qd.map(r=>r.count),
+            backgroundColor:qd.map((_,i)=>C.ramp[Math.min(i, C.ramp.length-1)]),
+            ...BAR}]},
+    options:{layout:{padding:{top:18}},
+      scales:{x:AX.x, y:{...AX.y, ticks:{...AX.y.ticks, callback:v=>compact(v)}}},
+      plugins:{legend:{display:false}, valueLabels:{enabled:true},
+        tooltip:{callbacks:{label:c => ` ${n0(c.parsed.y)} tasks waited ${c.label}`}}}},
+  });
+  fillTable("c-q", ["Queue wait", "Tasks"], qd.map(r => [r.range+" min", n0(r.count)]));
+
+  const ph = d.proc_histogram || [];
+  mkChart("c-proc", {
+    type:"bar",
+    data:{labels:ph.map(r=>r.range),
+          datasets:[{label:"Tasks", data:ph.map(r=>r.count), backgroundColor:C.blue, ...BAR}]},
+    options:{layout:{padding:{top:18}},
+      scales:{x:{...AX.x, title:{display:true, text:"minutes", color:C.ink3}},
+              y:{...AX.y, ticks:{...AX.y.ticks, callback:v=>compact(v)}}},
+      plugins:{legend:{display:false}, valueLabels:{enabled:true},
+        tooltip:{callbacks:{label:c => ` ${n0(c.parsed.y)} tasks took ${c.label} min`}}}},
+  });
+  fillTable("c-proc", ["Translation time (min)", "Tasks"], ph.map(r => [r.range, n0(r.count)]));
+
+  const fh = d.failure_by_hour || [];
+  mkChart("c-hour", {
+    type:"bar",
+    data:{labels:fh.map(r=>String(r.hour).padStart(2,"0")),
+      datasets:[
+        {label:"Submitted", data:fh.map(r=>r.total), backgroundColor:C.blue, ...BAR},
+        {label:"Failed",    data:fh.map(r=>r.fail),  backgroundColor:C.red, ...BAR},
+      ]},
+    options:{barPercentage:.9, categoryPercentage:.8,
+      scales:{x:{...AX.x, title:{display:true, text:"hour of day", color:C.ink3}}, y:AX.y},
+      interaction:{mode:"index", intersect:false},
+      plugins:{tooltip:{callbacks:{label:c => ` ${n0(c.parsed.y)} ${c.dataset.label.toLowerCase()}`}}}},
+  });
+  fillTable("c-hour", ["Hour", "Submitted", "Failed"],
+    fh.map(r => [String(r.hour).padStart(2,"0")+":00", n0(r.total), n0(r.fail)]));
+
+  const us = d.top_users || [];
+  hbar("c-users", us.map(r => [r.name, r.count]), {label:"Tasks"});
+  const failMap = Object.fromEntries((d.failing_users||[]).map(r => [r.name, r.count]));
+  fillTable("c-users", ["User", "Tasks", "Failed"],
+    us.map(r => [r.name, n0(r.count), n0(failMap[r.name] || 0)]));
+
+  const provRows = [...(d.top_providers||[]).map(r => ["provider", r.name, r.count]),
+                    ...(d.top_groups||[]).map(r => ["group", r.name, r.count])];
+  hbar("c-prov", provRows.map(r => [`${r[1]} · ${r[0]}`, r[2]]), {label:"Tasks"});
+  const gFail = Object.fromEntries([...(d.failing_providers||[]), ...(d.failing_groups||[])]
+    .map(r => [r.name, r.count]));
+  fillTable("c-prov", ["Kind", "Name", "Tasks", "Failed"],
+    provRows.map(r => [r[0], r[1], n0(r[2]), n0(gFail[r[1]] || 0)]));
+}
+
+/* ── tab 3: task details (server-paged) ─────────────────────────────── */
+function statusOptions(sc){
+  const dist = sc.job ? (sc.d.status_distribution||[]) : (S.stats.status_distribution||[]);
+  return [`<option value="all">All states</option>`,
+    ...dist.map(r => `<option value="${esc(r.status)}"${S.table.status===r.status?" selected":""}
+      >${esc(r.status)} (${n0(r.count)})</option>`)].join("");
+}
+
+function renderTasks(body, sc){
+  const t = S.table;
+  body.innerHTML = `
+    <div class="tbar">
+      <input type="text" id="t-q" placeholder="Search task id, user, target, provider…"
+             value="${esc(t.q)}" style="width:290px">
+      <select id="t-status" aria-label="State">${statusOptions(sc)}</select>
+      <label class="flabel" for="t-sort">Sort</label>
+      <select id="t-sort" aria-label="Sort">
+        ${[["slowest","Slowest first"],["fastest","Fastest first"],["queue","Longest queue wait"],
+           ["proc","Longest translation"],["newest","Newest"],["oldest","Oldest"],["task_id","Task id"]]
+          .map(([v,l]) => `<option value="${v}"${t.sort===v?" selected":""}>${l}</option>`).join("")}
+      </select>
+      <select id="t-limit" aria-label="Rows per page">
+        ${[25,50,100,200,500].map(n => `<option value="${n}"${t.limit===n?" selected":""}>${n} rows</option>`).join("")}
+      </select>
+      <div class="right">
+        <span class="muted mono" id="t-count"></span>
+        <a class="ghost" id="t-csv" href="#" download>Export CSV</a>
+      </div>
+    </div>
+    <div id="t-holder"></div>`;
+  el("t-csv").href = "/api/tasks.csv?" + qs({job:sc.job, status:t.status==="all"?"":t.status,
+                                             q:t.q, sort:t.sort});
+  loadTasks(sc);
+}
+
+async function loadTasks(sc){
+  const t = S.table;
+  const holder = el("t-holder");
+  if(!holder) return;
+  holder.innerHTML = `<div class="working"><span class="spinner"></span>Loading task rows…</div>`;
+  try{
+    const res = await getJSON("/api/tasks?" + qs({job:sc.job, status:t.status==="all"?"":t.status,
+      q:t.q, sort:t.sort, limit:t.limit, offset:t.offset}));
+    t.total = res.total; t.rows = res.rows;
+    drawTaskTable(sc);
+  }catch(e){
+    holder.innerHTML = `<div class="empty">${esc(e.message)}</div>`;
+  }
+}
+
+function drawTaskTable(sc){
+  const t = S.table, holder = el("t-holder");
+  if(!holder) return;
+  if(!t.rows.length){
+    holder.innerHTML = `<div class="empty">No task matches this filter.</div>`;
+    el("t-count").textContent = "0 rows";
+    return;
+  }
+  const showJob = !sc.job;
+  const cols = ["Task id", ...(showJob?["Job type"]:[]), "User", "Group", "Target", "Provider",
+                "State", "Queue", "Translation", "Total", "Started", "Ended"];
+  holder.innerHTML = `<div class="tscroll"><table>
+    <thead><tr>${cols.map((c,i)=>`<th${["Queue","Translation","Total"].includes(c)?' class="n"':""}>${esc(c)}</th>`).join("")}</tr></thead>
+    <tbody>${t.rows.map(r => `<tr>
+      <td class="mono">${esc(r.task_id)}</td>
+      ${showJob?`<td>${esc(r.job)}</td>`:""}
+      <td>${esc(r.user)}</td><td>${esc(r.group)}</td>
+      <td class="mono">${esc(r.target)}</td><td>${esc(r.provider)}</td>
+      <td><span class="pill s-${esc(r.status)}">${esc(r.status)}</span></td>
+      <td class="n">${dur(r.queue_min)}</td><td class="n">${dur(r.proc_min)}</td>
+      <td class="n">${dur(r.total_min)}</td>
+      <td class="mono">${esc(r.initial)}</td><td class="mono">${esc(r.end_time || "—")}</td>
+    </tr>`).join("")}</tbody></table></div>
+    <div class="pager">
+      <span>${n0(t.offset+1)}–${n0(t.offset+t.rows.length)} of ${n0(t.total)}</span>
+      <button class="ghost" id="t-prev" ${t.offset<=0?"disabled":""}>← Prev</button>
+      <button class="ghost" id="t-next" ${t.offset+t.limit>=t.total?"disabled":""}>Next →</button>
+    </div>`;
+  el("t-count").textContent = `${n0(t.total)} matching tasks`;
+  el("t-prev").onclick = () => { S.table.offset = Math.max(0, t.offset - t.limit); loadTasks(sc); };
+  el("t-next").onclick = () => { S.table.offset = t.offset + t.limit; loadTasks(sc); };
+}
+
+/* ── tab 4: anomalies + root cause analysis ─────────────────────────── */
+/* What the two comparison bars are actually comparing, per detector. Only
+   terminal_spike and queue_backlog compare against the system; latency_drift
+   compares the job against its own past and high_variance compares its own
+   tail against its own typical case, so a blanket "system baseline" label
+   would misstate three of the five. */
+const CMP = {
+  terminal_spike:  ["this job type", "all job types"],
+  queue_backlog:   ["this job type", "all job types"],
+  latency_drift:   ["most recent tasks", "its own earlier tasks"],
+  latency_outlier: ["this job type", "median of all job types"],
+  high_variance:   ["p95 — worst case", "p50 — typical case"],
+};
+
+function anomCard(a){
+  const isTime = a.unit === "min";
+  const f = v => a.unit === "%" ? pct(v) : (isTime ? dur(v) : n0(v));
+  const hasBase = a.baseline != null && a.metric !== "stalled";
+  const top = Math.max(Number(a.value)||0, Number(a.baseline)||0) || 1;
+  const [lval, lbase] = CMP[a.type] || ["this job type", "all job types"];
+  const bars = hasBase ? `<div class="cmp">
+      <span>${lval}</span>
+      <span class="bar"><i style="width:${(a.value/top*100).toFixed(1)}%;background:var(--sev)"></i></span>
+      <span class="val">${f(a.value)}</span>
+      <span>${lbase}</span>
+      <span class="bar"><i style="width:${(a.baseline/top*100).toFixed(1)}%;background:var(--line-3)"></i></span>
+      <span class="val">${f(a.baseline)}</span>
+    </div>` : "";
+  const z = a.z != null ? ` · z=${Number(a.z).toFixed(1)}` : "";
+  return `<div class="anom sev-${esc(a.severity)}">
+    <h4>${sevChip(a.severity)} ${esc(a.title)}
+      <span class="chip flag info">${esc(ANOM[a.type]||a.type)}</span>
+      <span class="muted mono" style="font-size:11px">${esc(a.metric)}${z}</span></h4>
+    <p>${esc(a.detail)}</p>
+    ${bars}
+    ${(a.sample||[]).length ? `<div class="samples"><span class="muted" style="font-size:11px">Example tasks</span>
+      ${a.sample.map(id => `<button class="tid" data-tid="${esc(id)}"
+        title="Show this task in Task details">${esc(id)}</button>`).join("")}</div>` : ""}
+  </div>`;
+}
+
+function renderRCA(body, sc){
+  if(!sc.job){
+    // System-level anomaly board: every flagged job type, worst first.
+    const flagged = (S.stats.job_health||[]).filter(j => j.anomaly_count > 0)
+      .sort(JOB_SORTS.severity);
+    if(!flagged.length){
+      body.innerHTML = `<div class="empty">No job type is flagged in this window.</div>`;
+      return;
+    }
+    body.innerHTML = `<div class="tbar"><span class="muted" style="font-size:12.5px">
+      ${n0(S.stats.anomaly_total)} signals across ${flagged.length} job types.
+      Open one to get root cause analysis and recommended actions.</span></div>
+      <div class="tscroll"><table>
+        <thead><tr><th>Job type</th><th>Severity</th><th class="n">Signals</th><th>Signal types</th>
+          <th class="n">Tasks</th><th class="n">Fail</th><th class="n">Queued</th><th class="n">p50</th><th></th></tr></thead>
+        <tbody>${flagged.map(j => `<tr>
+          <td><b>${esc(j.job)}</b></td>
+          <td>${sevChip(j.severity)}</td>
+          <td class="n">${j.anomaly_count}</td>
+          <td>${(j.anomalies||[]).map(a=>esc(ANOM[a.type]||a.type)).join(", ")}</td>
+          <td class="n">${n0(j.count)}</td><td class="n">${pct(j.terminal_pct)}</td>
+          <td class="n">${n0(j.in_queue)}</td><td class="n">${dur(j.p50_total)}</td>
+          <td><button class="ghost" data-diagnose="${esc(j.job)}">Diagnose →</button></td>
+        </tr>`).join("")}</tbody></table></div>`;
     return;
   }
 
-  /* gauge replaces text badge */
-  gauge.innerHTML = gaugesvg(a.health_score);
-
-  const pct = v => v==null ? "—" : Math.round(v*100)+"%";
-  badges.innerHTML = `
-    <span class="badge">confidence ${pct(a.confidence)}</span>
-    ${a.status==="partial" ? `<span class="badge" style="color:var(--warn);border-color:var(--warn)">partial</span>` : ""}
-  `;
-
-  const anomalyList = (a.anomalies||[]).length ? `<ul class="ai-list">${a.anomalies.map(x=>`
-    <li class="ai-item"><div class="ai-item-head">
-      <span class="ai-item-title">${esc(x.title)}</span>
-      <span class="tag sev-${esc(x.severity)}">${esc(x.severity)}</span>
-    </div><div class="ai-item-desc">${esc(x.description)}</div></li>`).join("")}</ul>`
-    : '<div class="ai-empty">No anomalies detected.</div>';
-
-  const recList = (a.recommendations||[]).length ? `<ul class="ai-list">${a.recommendations.map(x=>`
-    <li class="ai-item"><div class="ai-item-head">
-      <span class="ai-item-title">${esc(x.title)}</span>
-      <span class="tag pri-${esc(x.priority)}">${esc(x.priority)}</span>
-    </div><div class="ai-item-desc">${esc(x.description)}</div></li>`).join("")}</ul>`
-    : '<div class="ai-empty">No recommendations.</div>';
-
-  const reasoningHtml = a.reasoning ? `
-    <button class="ai-reasoning-toggle" onclick="toggleReasoning(this)">▶ How this was derived</button>
-    <div class="ai-reasoning" style="display:none">${esc(a.reasoning)}</div>` : "";
-
+  const anomalies = sc.anomalies;
+  const r = S.rca;
   body.innerHTML = `
-    <div class="ai-summary">${esc(a.executive_summary)}</div>
-    ${a.health_assessment ? `<div class="ai-assessment">${esc(a.health_assessment)}</div>` : ""}
-    <div class="ai-section"><h4>Detected anomalies</h4>${anomalyList}</div>
-    <div class="ai-section"><h4>Recommendations</h4>${recList}</div>
-    ${reasoningHtml ? `<div class="ai-section">${reasoningHtml}</div>` : ""}
-    ${a.error ? `<div class="ai-section ai-error">${esc(a.error)}</div>` : ""}
-  `;
-
-  /* build plain-text copy payload */
-  window._lastAnalysisText = [
-    "=== AI Insights — Dispatcher Analysis ===",
-    "",
-    a.executive_summary||"",
-    a.health_assessment ? "\nHealth Assessment\n"+a.health_assessment : "",
-    a.health_score!=null ? `\nHealth Score: ${Math.round(a.health_score)}/100` : "",
-    `Confidence: ${pct(a.confidence)}`,
-    "",
-    "--- Anomalies ---",
-    ...(a.anomalies||[]).map(x=>`[${x.severity.toUpperCase()}] ${x.title}: ${x.description}`),
-    "",
-    "--- Recommendations ---",
-    ...(a.recommendations||[]).map(x=>`[${x.priority.toUpperCase()}] ${x.title}: ${x.description}`),
-    a.reasoning ? "\n--- Reasoning ---\n"+a.reasoning : "",
-  ].join("\n");
-  copyBtn.style.display = "";
+    <div class="tbar">
+      <span class="muted" style="font-size:12.5px">${anomalies.length
+        ? `${anomalies.length} signal(s) for this job type, worst first.`
+        : "No anomaly signal for this job type — RCA will still profile it."}</span>
+      <div class="right">
+        <button class="primary" id="btn-rca" ${r.loading?"disabled":""}>
+          ${r.loading?`<span class="spinner"></span> Analysing…`:"Root cause analysis"}</button>
+        <button class="ghost" id="btn-rca-rules" ${r.loading?"disabled":""}
+          title="Skip the LLM and use the deterministic playbook">Rules only</button>
+      </div>
+    </div>
+    ${anomalies.map(anomCard).join("")}
+    <div id="rca-holder">${
+      r.loading ? `<div class="working"><span class="spinner"></span>
+        Correlating timings, failures, submitters and providers…</div>`
+      : (r.data && r.forJob === sc.job) ? rcaHTML(r.data)
+      : `<div class="rca"><p class="lead" style="margin:0">Run the analysis to get likely causes ranked by
+         likelihood, the actions to take now, and the checks to confirm each cause.</p></div>`}
+    </div>`;
 }
 
-/* ── Reasoning toggle ──────────────────────────────────────────── */
-function toggleReasoning(btn){
-  const box = btn.nextElementSibling;
-  const hidden = box.style.display==="none";
-  box.style.display = hidden?"block":"none";
-  btn.textContent = (hidden?"▼":"▶") + " How this was derived";
+function rcaHTML(r){
+  if(r.status === "error" && !r.causes.length)
+    return `<div class="rca"><div class="notice">${esc(r.error||"Analysis failed.")}</div></div>`;
+  const byHorizon = ["immediate","short_term","preventive"].map(h =>
+    [h, (r.actions||[]).filter(a => a.horizon === h)]).filter(([,as]) => as.length);
+  return `<div class="rca">
+    ${r.error ? `<div class="notice">${esc(r.error)} — showing the deterministic playbook instead.</div>` : ""}
+    <h3>Root cause analysis · ${esc(r.job)} ${sevChip(r.severity)}</h3>
+    <p class="lead">${esc(r.summary)}</p>
+    <div class="primary-cause">
+      <div class="k">Most likely root cause</div>
+      <div class="t">${esc(r.primary_cause)}</div>
+      ${r.impact?`<p class="ev" style="margin-top:6px;font-size:12.5px;color:var(--ink-2)">${esc(r.impact)}</p>`:""}
+    </div>
+
+    <h4>Likely causes · ranked</h4>
+    <ul class="rlist">${(r.causes||[]).map((c,i) => `<li>
+      <div class="hd"><span class="idx">${i+1}</span>${esc(c.cause)}
+        <span class="chip info">${esc(CAT[c.category]||c.category)}</span>
+        <span class="chip ${c.likelihood==="high"?"serious":c.likelihood==="medium"?"warning":"info"}"
+          >${esc(c.likelihood)} likelihood</span></div>
+      <p class="ev">${esc(c.evidence)}</p></li>`).join("")}</ul>
+
+    <h4>Recommended actions</h4>
+    ${byHorizon.map(([h,as]) => `
+      <div style="margin-bottom:10px">
+        <div class="muted" style="font-size:11.5px;margin-bottom:5px">${HORIZON[h]}</div>
+        <ul class="rlist">${as.map(a => `<li>
+          <div class="hd">${esc(a.action)}
+            <span class="chip ${PRIO_CLS[a.priority]||"info"}">${esc(a.priority)}</span></div>
+          <p class="meta"><b>Why:</b> ${esc(a.rationale)}</p>
+          <p class="meta"><b>Expected impact:</b> ${esc(a.expected_impact)}</p></li>`).join("")}</ul>
+      </div>`).join("")}
+
+    ${(r.checks||[]).length ? `<h4>Confirm before acting</h4>
+      <ul class="checks">${r.checks.map(c => `<li><span>${esc(c.check)}</span>
+        <span class="where">${esc(c.where)}</span></li>`).join("")}</ul>` : ""}
+
+    <div class="provenance">
+      <span>source: ${esc(r.source === "bedrock" ? "Bedrock LLM" : "rule-based playbook")}</span>
+      <span>status: ${esc(r.status)}</span>
+      <span>confidence: ${r.confidence!=null?Number(r.confidence).toFixed(2):"—"}</span>
+      <span>signals: ${(r.anomaly_types||[]).join(", ") || "none"}</span>
+      <button class="ghost" id="btn-rca-copy" style="margin-left:auto">Copy as text</button>
+    </div>
+  </div>`;
 }
 
-/* ── Task table helpers ────────────────────────────────────────── */
-function statusCls(s){
-  if(s==="COMPLETE") return "ok";
-  if(s==="TERMINAL"||s==="DELETE") return "stuck";  // red — actually failed/deleted
-  if(s==="SCHEDULED"||s==="PREPARING"||s==="TRANSLATING"||s==="LOADING") return "warn";
-  return ""; // INITIAL, DUPLICATE, UNKNOWN — no colour
-}
-function taskRows(tasks){
-  return (tasks||[]).map(t=>`<tr>
-    <td class="mono">${esc(t.task_id)}</td><td>${esc(t.job)}</td><td>${esc(t.user)}</td>
-    <td>${esc(t.group)}</td>
-    <td><span class="tag ${statusCls(t.status)}">${esc(t.status)}</span></td>
-    <td class="mono">${t.queue_min??''}</td><td class="mono">${t.proc_min??''}</td>
-    <td class="mono">${t.total_min??''}</td>
-    <td class="mono">${esc(t.initial)}</td><td class="mono">${esc(t.end_time)}</td>
-  </tr>`).join("");
+async function runRCA(mode){
+  if(!S.job || S.rca.loading) return;
+  S.rca = {loading:true, data:null, forJob:S.job};
+  renderPanel();
+  try{
+    S.rca.data = await getJSON("/api/rca?" + qs({job:S.job, mode:mode||""}));
+  }catch(e){
+    S.rca.data = {status:"error", source:"none", job:S.job, severity:S.detail.severity,
+      anomaly_types:[], summary:"", primary_cause:"", impact:"", causes:[], actions:[],
+      checks:[], confidence:0, error:e.message};
+  }finally{
+    S.rca.loading = false;
+    renderPanel();
+  }
 }
 
-function applyTableFilters(){
-  const q = ($("#flt")||{value:""}).value.toLowerCase();
-  const sf = window._statusFilter||"all";
-  const base = window._filteredTasks || window._tasks || [];
-  const rows = base.filter(t=>{
-    const textMatch = (t.task_id+t.job+t.user+t.group+t.status).toLowerCase().includes(q);
-    const statusMatch = sf==="all" || t.status===sf;
-    return textMatch && statusMatch;
-  });
-  $("#tbl tbody").innerHTML = taskRows(rows);
+function rcaText(r){
+  const L = [];
+  L.push(`ROOT CAUSE ANALYSIS — ${r.job}  [${r.severity}]`);
+  L.push(`source=${r.source} status=${r.status} confidence=${r.confidence}`);
+  L.push(`signals: ${(r.anomaly_types||[]).join(", ")}`, "", r.summary, "",
+         `PRIMARY CAUSE: ${r.primary_cause}`, `IMPACT: ${r.impact}`, "", "LIKELY CAUSES");
+  (r.causes||[]).forEach((c,i) => L.push(
+    `${i+1}. [${c.likelihood}/${c.category}] ${c.cause}`, `   evidence: ${c.evidence}`));
+  L.push("", "ACTIONS");
+  (r.actions||[]).forEach(a => L.push(
+    `- [${a.horizon}/${a.priority}] ${a.action}`, `  why: ${a.rationale}`, `  impact: ${a.expected_impact}`));
+  if((r.checks||[]).length){
+    L.push("", "CHECKS");
+    (r.checks||[]).forEach(c => L.push(`- ${c.check}  (${c.where})`));
+  }
+  return L.join("\n");
 }
 
-function filterTable(){ applyTableFilters(); }
-
-function setStatusFilter(btn){
-  document.querySelectorAll(".sfbtn").forEach(b=>b.classList.remove("active"));
-  btn.classList.add("active");
-  window._statusFilter = btn.dataset.sf;
-  applyTableFilters();
+/* ═══════════════════════════════════════════════════════════════════════
+   AI analysis card
+   ═══════════════════════════════════════════════════════════════════════ */
+async function runAI(){
+  const btn = el("btn-ai"), body = el("ai-body");
+  btn.disabled = true;
+  body.innerHTML = `<div class="working"><span class="spinner"></span>
+    Reading the snapshot with Bedrock…</div>`;
+  try{
+    const r = await getJSON("/api/analysis?" + qs());
+    body.innerHTML = `
+      ${r.error?`<div class="notice">${esc(r.error)}</div>`:""}
+      <p class="lead" style="font-size:13.5px;margin:0 0 10px">${esc(r.executive_summary||"")}</p>
+      <p style="font-size:12.5px;color:var(--ink-2);margin:0 0 14px">${esc(r.health_assessment||"")}</p>
+      ${(r.anomalies||[]).length?`<h4 style="font-size:11px;letter-spacing:.06em;text-transform:uppercase;
+        color:var(--ink-3);margin:0 0 8px">Anomalies</h4>
+        <ul class="rlist" style="margin-bottom:14px">${r.anomalies.map(a=>`<li>
+          <div class="hd">${esc(a.title||a.description||"")}
+            ${a.severity?`<span class="chip ${sev(a.severity).cls}">${esc(a.severity)}</span>`:""}</div>
+          ${a.description&&a.title?`<p class="ev">${esc(a.description)}</p>`:""}</li>`).join("")}</ul>`:""}
+      ${(r.recommendations||[]).length?`<h4 style="font-size:11px;letter-spacing:.06em;
+        text-transform:uppercase;color:var(--ink-3);margin:0 0 8px">Recommendations</h4>
+        <ul class="rlist">${r.recommendations.map(x=>`<li>
+          <div class="hd">${esc(x.title)}
+            <span class="chip ${PRIO_CLS[x.priority]||"info"}">${esc(x.priority)}</span></div>
+          <p class="ev">${esc(x.description)}</p></li>`).join("")}</ul>`:""}
+      <div class="provenance"><span>status: ${esc(r.status)}</span>
+        <span>confidence: ${r.confidence!=null?Number(r.confidence).toFixed(2):"—"}</span>
+        ${r.health_score!=null?`<span>health score: ${Number(r.health_score).toFixed(0)}/100</span>`:""}</div>`;
+  }catch(e){
+    body.innerHTML = `<div class="notice">${esc(e.message)}</div>`;
+  }finally{ btn.disabled = false; }
 }
 
-/* ── CSV export ────────────────────────────────────────────────── */
-function exportCsv(){
-  const tasks = window._filteredTasks || window._tasks || [];
-  if(!tasks.length) return;
-  const header = ["Task ID","Job","User","Group","Status","Queue (m)","Proc (m)","Total (m)","Initial","End"];
-  const rows = tasks.map(t=>[t.task_id,t.job,t.user,t.group,t.status,
-    t.queue_min??"",t.proc_min??"",t.total_min??"",t.initial??"",t.end_time??""
-  ].map(v=>`"${String(v??"").replace(/"/g,'""')}"`).join(","));
-  const csv = [header.join(","), ...rows].join("\r\n");
-  const a = document.createElement("a");
-  a.href = URL.createObjectURL(new Blob([csv],{type:"text/csv"}));
-  a.download = "dispatcher_tasks.csv";
-  a.click();
-  URL.revokeObjectURL(a.href);
-}
-
-/* ── Charts ────────────────────────────────────────────────────── */
-function draw(d){
-  const A="#7c8cff", C="#35d0d6", W="#ffcb5c", K="#ff6f8b", G="#8be36b", P="#b58bff";
-  const palette=[A,C,W,K,G,P,"#5f6d92","#35d6a5","#ff9f6b","#6bb6ff"];
-  const bare={plugins:{legend:{display:false}},responsive:true,
-    scales:{y:{beginAtZero:true,grid:{color:"#dde3ef"}},x:{grid:{display:false}}}};
-  const bareH={plugins:{legend:{display:false}},responsive:true,indexAxis:"y",
-    scales:{x:{beginAtZero:true,grid:{color:"#dde3ef"}},y:{grid:{display:false}}}};
-  const mk=(id,cfg)=>charts.push(new Chart($("#"+id),cfg));
-
-  const sd=d.status_distribution||[];
-  mk("c_status",{type:"doughnut",data:{labels:sd.map(s=>s.status),
-    datasets:[{data:sd.map(s=>s.count),backgroundColor:palette}]},
-    options:{plugins:{legend:{position:"right"}}}});
-
-  const qd=d.queue_distribution||[];
-  mk("c_queue",{type:"bar",data:{labels:qd.map(q=>q.range+" min"),
-    datasets:[{data:qd.map(q=>q.count),backgroundColor:qd.map(q=>q.range===">60"?K:q.range==="30-60"?W:A)}]},
-    options:bare});
-
-  const jb=d.job_breakdown||[];
-  mk("c_jobs",{data:{labels:jb.map(j=>j.job),datasets:[
-      {type:"bar",label:"Task count",data:jb.map(j=>j.count),backgroundColor:A,yAxisID:"y"},
-      {type:"line",label:"Avg total (min)",data:jb.map(j=>j.avg_total),borderColor:C,backgroundColor:C,yAxisID:"y1",tension:.3}]},
-    options:{responsive:true,plugins:{legend:{position:"top"}},
-      scales:{y:{beginAtZero:true,position:"left",grid:{color:"#dde3ef"}},
-              y1:{beginAtZero:true,position:"right",grid:{display:false}},x:{grid:{display:false}}}}});
-
-  const gd=d.group_distribution||[];
-  mk("c_group",{type:"bar",data:{labels:gd.map(g=>g.group),
-    datasets:[{data:gd.map(g=>g.count),backgroundColor:P}]},
-    options:bareH});
-
-  const ud=d.user_distribution||[];
-  mk("c_user",{type:"bar",data:{labels:ud.map(u=>u.user),
-    datasets:[{data:ud.map(u=>u.count),backgroundColor:G}]},
-    options:bareH});
-
-  window._thruAll = d.throughput||[];
-  drawThru(window._thruAll);
-}
-
-function drawThru(slice){
-  const C="#35d0d6";
-  const bare={plugins:{legend:{display:false}},responsive:true,
-    scales:{y:{beginAtZero:true,grid:{color:"#dde3ef"}},x:{grid:{display:false}}}};
-  const idx = charts.findIndex(c=>c.canvas.id==="c_thru");
-  if(idx!==-1){charts[idx].destroy();charts.splice(idx,1);}
-  charts.push(new Chart($("#c_thru"),{type:"line",data:{labels:slice.map(t=>t.t),
-    datasets:[{data:slice.map(t=>t.count),borderColor:C,backgroundColor:"rgba(53,208,214,.15)",fill:true,tension:.3,pointRadius:slice.length<120?3:0}]},
-    options:bare}));
-}
-
-function setThruRange(btn){
-  document.querySelectorAll(".thru-filters .fbtn").forEach(b=>b.classList.remove("active"));
-  btn.classList.add("active");
-  const days = parseInt(btn.dataset.days,10);
-  const all = window._thruFiltered||window._thruAll||[];
-  if(!days||!all.length){drawThru(all);return;}
-  const cutoff = new Date(Date.now() - days*24*60*60*1000);
-  const fmt = d=>`${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,"0")}-${String(d.getDate()).padStart(2,"0")}`;
-  drawThru(all.filter(t=>t.t>=fmt(cutoff)));
-}
-
-/* ── KPI range filter ──────────────────────────────────────────── */
-function selectKpiPreset(btn){
-  document.querySelectorAll("#kpi-filter-bar .fbtn").forEach(b=>b.classList.remove("active"));
-  btn.classList.add("active");
-  const fi = $("#kfi-from"), ti = $("#kfi-to");
-  if(fi) fi.value = "";
-  if(ti) ti.value = "";
-}
-
-function clearKpiPresets(){
-  document.querySelectorAll("#kpi-filter-bar .fbtn").forEach(b=>b.classList.remove("active"));
-}
-
-/* ── Natural-language date parsing ─────────────────────────────── */
-const MONTHS = {january:0,february:1,march:2,april:3,may:4,june:5,
-  july:6,august:7,september:8,october:9,november:10,december:11,
-  jan:0,feb:1,mar:2,apr:3,jun:5,jul:6,aug:7,sep:8,oct:9,nov:10,dec:11};
-
-function fmtDate(d){
-  return `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,"0")}-${String(d.getDate()).padStart(2,"0")}`;
+/* ═══════════════════════════════════════════════════════════════════════
+   Date filter — presets anchor to the newest log data, not to today
+   ═══════════════════════════════════════════════════════════════════════ */
+const MONTHS = {january:0,february:1,march:2,april:3,may:4,june:5,july:6,august:7,
+  september:8,october:9,november:10,december:11,jan:0,feb:1,mar:2,apr:3,jun:5,jul:6,
+  aug:7,sep:8,oct:9,nov:10,dec:11};
+const fmtDate = d => `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,"0")}-${String(d.getDate()).padStart(2,"0")}`;
+/** The logs are historical, so "last 7 days" means the last 7 days *of data*. */
+function anchorDate(){
+  const to = S.stats && S.stats.data_span && S.stats.data_span.to;
+  return to ? new Date(to + "T12:00:00") : new Date();
 }
 
 function parseNL(raw){
   const txt = (raw||"").trim().toLowerCase();
   if(!txt) return null;
 
-  // "Nth week of <month> <year>"  e.g. "2nd week of april 2022"
   let m = txt.match(/(\d+)(?:st|nd|rd|th)?\s+week\s+of\s+([a-z]+)\s+(\d{4})/);
   if(m){
-    const week=parseInt(m[1]), mo=MONTHS[m[2]], yr=parseInt(m[3]);
+    const week=+m[1], mo=MONTHS[m[2]], yr=+m[3];
     if(mo==null||isNaN(yr)||week<1||week>5) return {error:`Can't parse "${raw}"`};
-    const firstDay = new Date(yr, mo, 1);
-    const startOffset = (week-1)*7;
-    const from = new Date(yr, mo, 1 + startOffset);
-    const to   = new Date(yr, mo, 1 + startOffset + 6);
-    // clamp to month boundaries
+    const from = new Date(yr, mo, 1+(week-1)*7);
+    let to = new Date(yr, mo, 1+(week-1)*7+6);
     const monthEnd = new Date(yr, mo+1, 0);
     if(from > monthEnd) return {error:`Week ${week} doesn't exist in that month`};
-    return {from: fmtDate(from), to: fmtDate(to > monthEnd ? monthEnd : to)};
+    return {from:fmtDate(from), to:fmtDate(to>monthEnd?monthEnd:to)};
   }
-
-  // "Q<n> <year>"  e.g. "Q1 2023"
-  m = txt.match(/q([1-4])\s+(\d{4})/);
-  if(m){
-    const q=parseInt(m[1])-1, yr=parseInt(m[2]);
-    const from = new Date(yr, q*3, 1);
-    const to   = new Date(yr, q*3+3, 0);
-    return {from: fmtDate(from), to: fmtDate(to)};
-  }
-
-  // "<year> only"  e.g. "2023"
+  m = txt.match(/q([1-4])\s*(?:of\s*)?(\d{4})/);
+  if(m){ const q=+m[1]-1, yr=+m[2];
+    return {from:fmtDate(new Date(yr,q*3,1)), to:fmtDate(new Date(yr,q*3+3,0))}; }
   m = txt.match(/^(\d{4})$/);
-  if(m){
-    const yr=parseInt(m[1]);
-    return {from:`${yr}-01-01`, to:`${yr}-12-31`};
-  }
-
-  // "<month> <year>"  e.g. "april 2022"
+  if(m) return {from:`${m[1]}-01-01`, to:`${m[1]}-12-31`};
   m = txt.match(/^([a-z]+)\s+(\d{4})$/);
-  if(m && MONTHS[m[1]]!=null){
-    const mo=MONTHS[m[1]], yr=parseInt(m[2]);
-    const from = new Date(yr, mo, 1);
-    const to   = new Date(yr, mo+1, 0);
-    return {from: fmtDate(from), to: fmtDate(to)};
-  }
-
-  // "<day> <month> <year>"  e.g. "1 april 2022", "1st april 2022"
+  if(m && MONTHS[m[1]]!=null){ const mo=MONTHS[m[1]], yr=+m[2];
+    return {from:fmtDate(new Date(yr,mo,1)), to:fmtDate(new Date(yr,mo+1,0))}; }
   m = txt.match(/^(\d{1,2})(?:st|nd|rd|th)?\s+([a-z]+)\s+(\d{4})$/);
-  if(m && MONTHS[m[2]]!=null){
-    const day=parseInt(m[1]), mo=MONTHS[m[2]], yr=parseInt(m[3]);
-    return {from: fmtDate(new Date(yr, mo, day)), to: fmtDate(new Date(yr, mo, day))};
-  }
-
-  // "between/from <day> <month> [year] and/to <day> <month> [year]"
-  // e.g. "between 1 april and 20 april 2022", "from 1 april to 20 april 2022"
+  if(m && MONTHS[m[2]]!=null)
+    return {from:fmtDate(new Date(+m[3],MONTHS[m[2]],+m[1])),
+            to:  fmtDate(new Date(+m[3],MONTHS[m[2]],+m[1]))};
   m = txt.match(/^(?:between|from)?\s*(\d{1,2})(?:st|nd|rd|th)?\s+([a-z]+)(?:\s+(\d{4}))?\s+(?:and|to)\s+(\d{1,2})(?:st|nd|rd|th)?\s+([a-z]+)(?:\s+(\d{4}))?$/);
   if(m && MONTHS[m[2]]!=null && MONTHS[m[5]]!=null){
-    const d1=parseInt(m[1]), mo1=MONTHS[m[2]], yr1=m[3]?parseInt(m[3]):null;
-    const d2=parseInt(m[4]), mo2=MONTHS[m[5]], yr2=m[6]?parseInt(m[6]):null;
-    const fromYr=yr1||yr2, toYr=yr2||yr1;
-    if(fromYr && toYr)
-      return {from: fmtDate(new Date(fromYr, mo1, d1)), to: fmtDate(new Date(toYr, mo2, d2))};
+    const fromYr = m[3]?+m[3]:(m[6]?+m[6]:null), toYr = m[6]?+m[6]:(m[3]?+m[3]:null);
+    if(fromYr && toYr) return {from:fmtDate(new Date(fromYr,MONTHS[m[2]],+m[1])),
+                               to:fmtDate(new Date(toYr,MONTHS[m[5]],+m[4]))};
   }
-
-  // "last N days/weeks/months"
-  m = txt.match(/last\s+(\d+)\s+(day|days|week|weeks|month|months)/);
+  m = txt.match(/last\s+(?:(\d+)\s+)?(day|week|month|year)s?/);
   if(m){
-    const n=parseInt(m[1]), unit=m[2];
-    const to = new Date(); to.setHours(23,59,59);
-    const from = new Date();
-    if(unit.startsWith("day"))   from.setDate(from.getDate()-n);
-    if(unit.startsWith("week"))  from.setDate(from.getDate()-n*7);
-    if(unit.startsWith("month")) from.setMonth(from.getMonth()-n);
-    return {from: fmtDate(from), to: fmtDate(to)};
+    const n=m[1]?+m[1]:1, unit=m[2], to=anchorDate(), from=new Date(to);
+    if(unit==="day")   from.setDate(from.getDate()-n);
+    if(unit==="week")  from.setDate(from.getDate()-n*7);
+    if(unit==="month") from.setMonth(from.getMonth()-n);
+    if(unit==="year")  from.setFullYear(from.getFullYear()-n);
+    return {from:fmtDate(from), to:fmtDate(to)};
   }
-
-  // Fall back to chrono-node for everything else
-  // ("between X and Y", "from X to Y", plain date ranges, etc.)
-  if(typeof chrono === "undefined") return {error:"Date parser not loaded yet"};
-  const results = chrono.parse(raw);
-  if(!results.length) return {error:`Could not understand "${raw}"`};
-
-  if(results.length >= 2){
-    // Two separate dates parsed → use as from/to
-    const d1 = results[0].start.date(), d2 = results[1].start.date();
-    const [lo,hi] = d1<=d2 ? [d1,d2] : [d2,d1];
-    return {from: fmtDate(lo), to: fmtDate(hi)};
+  /* Free text beyond the patterns above needs chrono; without it, say what
+     does work rather than leaving the user at a dead end. */
+  if(typeof chrono === "undefined")
+    return {error:'Try "March 2022", "Q3 2022", "2nd week of April 2022" or "last 30 days"'};
+  /* Anchor relative phrases ("yesterday", "3 days ago") to the newest day in
+     the logs, not to today — these are historical logs and the presets anchor
+     the same way, so "yesterday" must mean the same thing in both. */
+  const res = chrono.parse(raw, anchorDate());
+  if(!res.length) return {error:`Could not understand "${raw}"`};
+  if(res.length >= 2){
+    const a=res[0].start.date(), b=res[1].start.date();
+    return a<=b ? {from:fmtDate(a), to:fmtDate(b)} : {from:fmtDate(b), to:fmtDate(a)};
   }
-
-  const r = results[0];
-  if(r.end){
-    // Single result with an explicit end (e.g. "april 1 to april 30 2022")
-    return {from: fmtDate(r.start.date()), to: fmtDate(r.end.date())};
-  }
-
-  // Single point — treat as full day
-  const d = r.start.date();
-  return {from: fmtDate(d), to: fmtDate(d)};
+  const r0 = res[0];
+  if(r0.end) return {from:fmtDate(r0.start.date()), to:fmtDate(r0.end.date())};
+  const d = r0.start.date();
+  return {from:fmtDate(d), to:fmtDate(d)};
 }
 
-function nlPreview(){
-  const fb = $("#nl-feedback");
-  const txt = ($("#nl-input")||{}).value||"";
-  if(!txt.trim()){ fb.innerHTML=""; return; }
-  const res = parseNL(txt);
-  if(!res)         { fb.innerHTML=""; return; }
-  if(res.error)    { fb.innerHTML=`<span class="nl-error">${esc(res.error)}</span>`; return; }
-  fb.innerHTML=`<span class="nl-parsed">→ ${res.from} to ${res.to}</span>`;
+function setPreset(days){
+  document.querySelectorAll("#presets button").forEach(b =>
+    b.setAttribute("aria-pressed", String(+b.dataset.days === days)));
+}
+function applyWindow(from, to, {preset=null}={}){
+  S.from = from || ""; S.to = to || "";
+  el("d-from").value = S.from; el("d-to").value = S.to;
+  setPreset(preset==null ? -1 : preset);
+  S.table.offset = 0;
+  S.rca = {loading:false, data:null, forJob:null};
+  loadStats();
 }
 
-function nlApply(){
-  const txt = ($("#nl-input")||{}).value||"";
-  if(!txt.trim()) return;
-  const res = parseNL(txt);
-  if(!res||res.error){
-    const fb=$("#nl-feedback");
-    if(fb) fb.innerHTML=`<span class="nl-error">${esc((res&&res.error)||`Could not understand "${txt}"`)}</span>`;
+/* ═══════════════════════════════════════════════════════════════════════
+   Events
+   ═══════════════════════════════════════════════════════════════════════ */
+el("presets").addEventListener("click", e => {
+  const b = e.target.closest("button[data-days]");
+  if(!b) return;
+  const days = +b.dataset.days;
+  if(!days){ el("nl").value=""; el("nl-note").innerHTML=""; applyWindow("", "", {preset:0}); return; }
+  const to = anchorDate(), from = new Date(to);
+  from.setDate(from.getDate() - days + 1);
+  applyWindow(fmtDate(from), fmtDate(to), {preset:days});
+});
+el("btn-apply").onclick = () => applyWindow(el("d-from").value, el("d-to").value);
+el("btn-clear").onclick = () => { el("nl").value=""; el("nl-note").innerHTML="";
+  applyWindow("", "", {preset:0}); };
+el("btn-reload").onclick = () => loadStats();
+el("btn-ai").onclick = runAI;
+
+el("nl").addEventListener("input", () => {
+  const note = el("nl-note"), txt = el("nl").value;
+  if(!txt.trim()){ note.innerHTML = ""; return; }
+  const r = parseNL(txt);
+  note.innerHTML = !r ? "" : r.error
+    ? `<span class="bad">${esc(r.error)}</span>`
+    : `<span class="ok">→ ${r.from} … ${r.to}</span>`;
+});
+/* The free-text parser is a module import, so it can land after the user has
+   already typed; re-run the preview when it does. */
+window.addEventListener("chrono-ready", () => {
+  if(el("nl").value.trim()) el("nl").dispatchEvent(new Event("input"));
+});
+el("nl").addEventListener("keydown", e => {
+  if(e.key !== "Enter") return;
+  const r = parseNL(el("nl").value);
+  if(!r) return;
+  if(r.error){ el("nl-note").innerHTML = `<span class="bad">${esc(r.error)}</span>`; return; }
+  applyWindow(r.from, r.to);
+});
+
+el("job-sort").onchange = e => { S.sort = e.target.value; renderJobs(); };
+el("job-filter").addEventListener("input", e => { S.jobQuery = e.target.value; renderJobs(); });
+el("f-all").onclick = () => { S.flaggedOnly = false; renderJobs(); };
+el("f-flagged").onclick = () => { S.flaggedOnly = true; renderJobs(); };
+
+/* Job boxes: whole box selects; the "Why? →" corner jumps straight to RCA. */
+el("jobgrid").addEventListener("click", e => {
+  const box = e.target.closest(".jbox");
+  if(!box) return;
+  const goto = e.target.closest("[data-goto]");
+  selectJob(box.dataset.job, goto ? {tab:goto.dataset.goto, autoRCA:true} : {});
+});
+el("jobgrid").addEventListener("keydown", e => {
+  if(e.key !== "Enter" && e.key !== " ") return;
+  const box = e.target.closest(".jbox");
+  if(!box) return;
+  e.preventDefault();
+  selectJob(box.dataset.job);
+});
+
+/* Panel is re-rendered wholesale, so delegate everything inside it. */
+el("panel").addEventListener("click", e => {
+  const tab = e.target.closest("[data-tab]");
+  if(tab){ S.tab = tab.dataset.tab; renderPanel(); return; }
+  if(e.target.closest("#btn-close-job")){ selectJob(null); return; }
+  if(e.target.closest("#btn-rca")){ runRCA(); return; }
+  if(e.target.closest("#btn-rca-rules")){ runRCA("rules"); return; }
+  if(e.target.closest("#btn-rca-copy")){
+    const btn = e.target.closest("#btn-rca-copy");
+    navigator.clipboard.writeText(rcaText(S.rca.data)).then(() => {
+      btn.textContent = "Copied ✓"; setTimeout(() => btn.textContent = "Copy as text", 1600);
+    });
     return;
   }
-  // Fill date pickers and clear presets
-  const fi=$("#kfi-from"), ti=$("#kfi-to");
-  if(fi) fi.value = res.from;
-  if(ti) ti.value = res.to;
-  clearKpiPresets();
-  // Trigger Apply
-  applyKpiFilter(
-    new Date(res.from+"T00:00:00"),
-    new Date(res.to  +"T23:59:59"),
-    `${res.from} → ${res.to}`
-  );
-  const lbl=$("#kpi-range-label");
-  if(lbl) lbl.textContent=`(${res.from} → ${res.to})`;
-}
-
-function applyKpiFilterUI(){
-  const activePreset = document.querySelector("#kpi-filter-bar .fbtn.active");
-  const from = $("#kfi-from")?.value, to = $("#kfi-to")?.value;
-
-  if(activePreset){
-    const days = parseInt(activePreset.dataset.krange, 10);
-    const cutoff = days ? new Date(Date.now() - days*24*60*60*1000) : null;
-    applyKpiFilter(cutoff, null, days===0 ? "All time" : activePreset.textContent);
-  } else {
-    const cutoffFrom = from ? new Date(from+"T00:00:00") : null;
-    const cutoffTo   = to   ? new Date(to  +"T23:59:59") : null;
-    const label = from && to ? `${from} → ${to}` : from ? `from ${from}` : to ? `until ${to}` : "All time";
-    applyKpiFilter(cutoffFrom, cutoffTo, label);
+  const diag = e.target.closest("[data-diagnose]");
+  if(diag){ selectJob(diag.dataset.diagnose, {tab:"rca", autoRCA:true}); return; }
+  const tid = e.target.closest("[data-tid]");
+  if(tid){                                   // sample task id → find it in the table
+    S.table = {...S.table, q:tid.dataset.tid, status:"all", offset:0};
+    S.tab = "tasks"; renderPanel(); return;
   }
+});
+el("panel").addEventListener("change", e => {
+  const t = e.target;
+  if(t.id === "t-status"){ S.table.status = t.value; S.table.offset = 0; }
+  else if(t.id === "t-sort"){ S.table.sort = t.value; S.table.offset = 0; }
+  else if(t.id === "t-limit"){ S.table.limit = +t.value; S.table.offset = 0; }
+  else return;
+  renderPanel();
+});
+let tq;
+el("panel").addEventListener("input", e => {
+  if(e.target.id !== "t-q") return;
+  clearTimeout(tq);
+  const v = e.target.value;
+  tq = setTimeout(() => { S.table.q = v; S.table.offset = 0; loadTasks(scope());
+    const a = el("t-csv");
+    if(a) a.href = "/api/tasks.csv?" + qs({job:S.job, q:v,
+      status:S.table.status==="all"?"":S.table.status, sort:S.table.sort});
+  }, 260);
+});
+
+window.addEventListener("hashchange", () => {
+  if(hashSelf){ hashSelf = false; return; }        // our own write, not a back button
+  boot();
+});
+
+window.addEventListener("resize", () => {
+  clearTimeout(window.__rs);
+  window.__rs = setTimeout(() => Object.values(S.charts).forEach(c => c.resize()), 150);
+});
+
+/** Restore job / tab / window from the URL hash, then fetch. */
+function boot(){
+  const job = readHash();
+  el("d-from").value = S.from; el("d-to").value = S.to;
+  setPreset((S.from || S.to) ? -1 : 0);
+  S.job = job;                     // loadStats() picks this up and fetches the detail
+  loadStats().then(() => {
+    if(S.job && S.tab === "rca" && hashRCA) runRCA(hashRCA === "rules" ? "rules" : "");
+    hashRCA = null;
+  });
 }
-
-function taskDate(t){
-  const raw = t.initial || t.end_time || "";
-  if(!raw) return null;
-  const d = new Date(raw);
-  return isNaN(d) ? null : d;
-}
-
-function avg(arr){ return arr.length ? Math.round(arr.reduce((s,v)=>s+v,0)/arr.length) : 0; }
-
-function applyKpiFilter(from, to, label){
-  const all = window._tasks || [];
-  const sub = all.filter(t=>{
-    const d = taskDate(t);
-    if(!d) return !from;
-    if(from && d < from) return false;
-    if(to   && d > to  ) return false;
-    return true;
-  });
-  window._filteredTasks = sub;
-
-  /* ── KPI tiles ── */
-  const total      = sub.length;
-  const completed  = sub.filter(t=>t.end_state==="COMPLETE").length;
-  const inQueue    = sub.filter(t=>t.status==="SCHEDULED").length;
-  const termJobs   = sub.filter(t=>t.end_state==="TERMINAL").length;
-  const deleted    = sub.filter(t=>t.end_state==="DELETE").length;
-  const duplicate  = sub.filter(t=>t.end_state==="DUPLICATE").length;
-  const qTimes   = sub.map(t=>t.queue_min).filter(v=>v!=null);
-  const pTimes   = sub.map(t=>t.proc_min ).filter(v=>v!=null);
-  const tTimes   = sub.filter(t=>t.end_state==="COMPLETE").map(t=>t.total_min).filter(v=>v!=null);
-  const maxQ     = qTimes.length ? Math.max(...qTimes) : 0;
-  const avgQ = avg(qTimes), avgP = avg(pTimes), avgT = avg(tTimes);
-  const inQueuePct  = total ? Math.round(inQueue/total*100)   : 0;
-  const termPct     = total ? Math.round(termJobs/total*100)  : 0;
-  const deletedPct  = total ? Math.round(deleted/total*100)   : 0;
-  const duplicatePct= total ? Math.round(duplicate/total*100) : 0;
-  const inQueueCls  = inQueue>0?"warn":"ok";
-  const termCls     = termJobs>0?"crit":"ok";
-  const delCls      = deleted>0?"crit":"ok";
-  const dupCls      = duplicate>0?"warn":"ok";
-  const qCls=avgQ>=30?"crit":avgQ>=10?"warn":"ok";
-  const tCls=avgT>=30?"crit":avgT>=10?"warn":"ok";
-
-  const lbl = $("#kpi-range-label");
-  if(lbl) lbl.textContent = label ? `(${label})` : "";
-
-  const otherCount = sub.filter(t=>["INITIAL","PREPARING","TRANSLATING","LOADING"].includes(t.status)).length;
-  const otherPct   = total ? Math.round(otherCount/total*100) : 0;
-  const completedPct = total ? Math.round(completed/total*100) : 0;
-
-  const tiles = $("#kpi-tiles");
-  if(tiles) tiles.innerHTML = `
-    <div class="kpi-row-label">Task counts</div>
-    <div class="kpi"><div class="v">${total}</div><div class="l">Total Tasks</div></div>
-    <div class="kpi ok"><div class="v">${completed}</div><div class="l">Completed (${completedPct}%)</div></div>
-    <div class="kpi ${termCls}"><div class="v">${termJobs}</div><div class="l">Terminal (${termPct}%)</div></div>
-    <div class="kpi ${inQueueCls}"><div class="v">${inQueue}</div><div class="l">In Queue (${inQueuePct}%)</div></div>
-    <div class="kpi-row-label">Other states</div>
-    <div class="kpi ${delCls}"><div class="v">${deleted}</div><div class="l">Deleted (${deletedPct}%)</div></div>
-    <div class="kpi ${dupCls}"><div class="v">${duplicate}</div><div class="l">Duplicate (${duplicatePct}%)</div></div>
-    <div class="kpi"><div class="v">${otherCount}</div><div class="l">Other State (${otherPct}%)</div></div>
-    <div class="kpi" style="visibility:hidden"></div>
-    <div class="kpi-row-label">Timing averages</div>
-    <div class="kpi ${tCls}"><div class="v">${avgT}<small> min</small></div><div class="l">Avg Completion Time</div></div>
-    <div class="kpi ${qCls}"><div class="v">${avgQ}<small> min</small></div><div class="l">Avg Queue Time</div></div>
-    <div class="kpi"><div class="v">${avgP}<small> min</small></div><div class="l">Avg Processing Time</div></div>
-    <div class="kpi" style="visibility:hidden"></div>
-  `;
-
-  /* ── Recompute chart data from sub ── */
-  const A="#7c8cff", C="#35d0d6", W="#ffcb5c", K="#ff6f8b", G="#8be36b", P="#b58bff";
-  const palette=[A,C,W,K,G,P,"#5f6d92","#35d6a5","#ff9f6b","#6bb6ff"];
-
-  // status distribution
-  const statusCount={};
-  sub.forEach(t=>{ statusCount[t.status]=(statusCount[t.status]||0)+1; });
-  const sdLabels=Object.keys(statusCount), sdVals=sdLabels.map(s=>statusCount[s]);
-
-  // queue distribution (same buckets as server)
-  const qBuckets={"0-5":0,"5-15":0,"15-30":0,"30-60":0,">60":0};
-  sub.forEach(t=>{
-    const v=t.queue_min; if(v==null) return;
-    if(v<=5) qBuckets["0-5"]++;
-    else if(v<=15) qBuckets["5-15"]++;
-    else if(v<=30) qBuckets["15-30"]++;
-    else if(v<=60) qBuckets["30-60"]++;
-    else qBuckets[">60"]++;
-  });
-  const qdLabels=Object.keys(qBuckets), qdVals=qdLabels.map(k=>qBuckets[k]);
-  const qdColors=qdLabels.map(r=>r===">60"?K:r==="30-60"?W:A);
-
-  // job breakdown
-  const jobMap={};
-  sub.forEach(t=>{
-    if(!jobMap[t.job]) jobMap[t.job]={count:0,totals:[]};
-    jobMap[t.job].count++;
-    if(t.end_state==="COMPLETE" && t.total_min!=null) jobMap[t.job].totals.push(t.total_min);
-  });
-  const jbEntries=Object.entries(jobMap).sort((a,b)=>b[1].count-a[1].count);
-  const jbLabels=jbEntries.map(([j])=>j);
-  const jbCounts=jbEntries.map(([,v])=>v.count);
-  const jbAvg=jbEntries.map(([,v])=>v.totals.length?Math.round(v.totals.reduce((s,x)=>s+x,0)/v.totals.length):0);
-
-  // group distribution
-  const grpMap={};
-  sub.forEach(t=>{ grpMap[t.group]=(grpMap[t.group]||0)+1; });
-  const gdEntries=Object.entries(grpMap).sort((a,b)=>b[1]-a[1]);
-
-  // user distribution
-  const usrMap={};
-  sub.forEach(t=>{ usrMap[t.user]=(usrMap[t.user]||0)+1; });
-  const udEntries=Object.entries(usrMap).sort((a,b)=>b[1]-a[1]).slice(0,15);
-
-  // throughput (completions per minute bucket)
-  const thruMap={};
-  sub.filter(t=>t.status==="COMPLETE"&&t.end_time).forEach(t=>{
-    const dt=new Date(t.end_time); if(isNaN(dt)) return;
-    const key=`${dt.getFullYear()}-${String(dt.getMonth()+1).padStart(2,"0")}-${String(dt.getDate()).padStart(2,"0")} `+
-              `${String(dt.getHours()).padStart(2,"0")}:${String(dt.getMinutes()).padStart(2,"0")}`;
-    thruMap[key]=(thruMap[key]||0)+1;
-  });
-  const thruSlice=Object.entries(thruMap).sort((a,b)=>a[0]<b[0]?-1:1).map(([t,count])=>({t,count}));
-  window._thruFiltered = thruSlice;
-
-  /* ── Redraw charts ── */
-  const bare={plugins:{legend:{display:false}},responsive:true,
-    scales:{y:{beginAtZero:true,grid:{color:"#dde3ef"}},x:{grid:{display:false}}}};
-  const bareH={plugins:{legend:{display:false}},responsive:true,indexAxis:"y",
-    scales:{x:{beginAtZero:true,grid:{color:"#dde3ef"}},y:{grid:{display:false}}}};
-
-  // Single-pass destroy+remove: c.canvas goes null after destroy() in Chart.js 4,
-  // so we must not read c.canvas after the destroy call.
-  const chartIdSet = new Set(["c_status","c_queue","c_jobs","c_group","c_user"]);
-  charts = charts.filter(c => {
-    if (c.canvas && chartIdSet.has(c.canvas.id)) { c.destroy(); return false; }
-    return true;
-  });
-
-  // Replace canvas nodes so Chart.js internal registry has no stale reference.
-  const mk=(id,cfg)=>{
-    const old=$("#"+id); if(!old) return;
-    const fresh=document.createElement("canvas"); fresh.id=id;
-    old.parentNode.replaceChild(fresh,old);
-    charts.push(new Chart(fresh,cfg));
-  };
-
-  mk("c_status",{type:"doughnut",data:{labels:sdLabels,
-    datasets:[{data:sdVals,backgroundColor:palette}]},
-    options:{plugins:{legend:{position:"right"}}}});
-
-  mk("c_queue",{type:"bar",data:{labels:qdLabels.map(r=>r+" min"),
-    datasets:[{data:qdVals,backgroundColor:qdColors}]},options:bare});
-
-  mk("c_jobs",{data:{labels:jbLabels,datasets:[
-    {type:"bar",label:"Task count",data:jbCounts,backgroundColor:A,yAxisID:"y"},
-    {type:"line",label:"Avg total (min)",data:jbAvg,borderColor:C,backgroundColor:C,yAxisID:"y1",tension:.3}]},
-    options:{responsive:true,plugins:{legend:{position:"top"}},
-      scales:{y:{beginAtZero:true,position:"left",grid:{color:"#dde3ef"}},
-              y1:{beginAtZero:true,position:"right",grid:{display:false}},x:{grid:{display:false}}}}});
-
-  mk("c_group",{type:"bar",data:{labels:gdEntries.map(([g])=>g),
-    datasets:[{data:gdEntries.map(([,v])=>v),backgroundColor:P}]},options:bareH});
-
-  mk("c_user",{type:"bar",data:{labels:udEntries.map(([u])=>u),
-    datasets:[{data:udEntries.map(([,v])=>v),backgroundColor:G}]},options:bareH});
-
-  // reset throughput sub-range to "All" within filtered window
-  document.querySelectorAll(".thru-filters .fbtn").forEach(b=>b.classList.toggle("active",b.dataset.days==="0"));
-  drawThru(thruSlice);
-
-  /* ── Redraw table ── */
-  applyTableFilters();
-}
-
-function load(){
-  fetch("/api/stats").then(r=>r.json()).then(render)
-    .catch(e=>$("#root").innerHTML=`<div class="loading">Failed to load: ${esc(e)}</div>`);
-}
-load();
+boot();
 </script>
 </body>
 </html>
