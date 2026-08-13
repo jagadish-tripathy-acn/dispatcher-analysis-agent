@@ -118,16 +118,39 @@ section{margin-bottom:18px}
 
 /* ══ job indicator boxes ══════════════════════════════════════════════ */
 .jobgrid{display:grid;grid-template-columns:repeat(auto-fill,minmax(304px,1fr));gap:12px}
-.jbox{--sev:var(--line-2);--tint:transparent;
+/* --glow is an "r,g,b" triplet rather than a colour so one shadow rule can vary
+   only its alpha; --ga scales that alpha per hue, because yellow and green read
+   lighter than red at the same opacity. The colour is always secondary to the
+   severity chip's icon + word — it never carries the state on its own. */
+.jbox{--sev:var(--line-2);--glow:27,27,25;--ga:1;--tint:transparent;
   position:relative;background:var(--surface);border:1px solid var(--line);
   border-left:3px solid var(--sev);border-radius:var(--radius);padding:12px 13px 11px;
-  box-shadow:var(--shadow);text-align:left;display:block;width:100%;
-  transition:box-shadow .12s,transform .12s}
-.jbox:hover{box-shadow:0 3px 10px rgba(27,27,25,.10);transform:translateY(-1px)}
+  text-align:left;display:block;width:100%;
+  box-shadow:0 1px 2px rgba(27,27,25,.05),
+             0 8px 18px -10px rgba(var(--glow),calc(.45 * var(--ga)));
+  transition:box-shadow .14s,transform .14s}
+/* The gradient shadow: a blurred wash of the severity colour under the card.
+   top:100% keeps it clear of the card's own box, so it needs no z-index — a
+   negative-z layer would flip in front of the card background the moment the
+   hover transform turns .jbox into a stacking context. clip-path runs after
+   filter, so it trims the blur's upward bleed off the card's bottom edge while
+   still letting it spread sideways. */
+.jbox::after{content:"";position:absolute;top:100%;left:12px;right:12px;height:15px;
+  pointer-events:none;border-radius:0 0 var(--radius) var(--radius);
+  background:linear-gradient(180deg,rgba(var(--glow),calc(.6 * var(--ga))),
+                                    rgba(var(--glow),0));
+  filter:blur(6px);clip-path:inset(0 -24px -24px -24px);
+  transition:height .14s,opacity .14s}
+.jbox:hover{transform:translateY(-2px);
+  box-shadow:0 1px 2px rgba(27,27,25,.06),
+             0 14px 26px -12px rgba(var(--glow),calc(.7 * var(--ga)))}
+.jbox:hover::after{height:21px}
 .jbox[aria-pressed="true"]{border-color:var(--accent);border-left-color:var(--sev);
-  box-shadow:0 0 0 2px var(--accent-soft)}
-.jbox.flagged{background:
-  linear-gradient(var(--tint),var(--tint)) padding-box,var(--surface)}
+  box-shadow:0 0 0 2px var(--accent-soft),
+             0 14px 26px -16px rgba(var(--glow),calc(.85 * var(--ga)))}
+/* Tint fades out downward so the numbers sit on plain white, not on colour. */
+.jbox.flagged,.jbox.sev-ok{background:
+  linear-gradient(180deg,var(--tint),rgba(255,255,255,0) 60%) padding-box,var(--surface)}
 .jb-top{display:flex;align-items:flex-start;gap:8px;margin-bottom:7px}
 .jb-name{font-size:13.5px;font-weight:600;line-height:1.25;word-break:break-word}
 .jb-sev{margin-left:auto;flex:none}
@@ -159,11 +182,11 @@ section{margin-bottom:18px}
   font-size:11px;color:var(--ink-3)}
 
 /* severity: colour + glyph + word, never colour alone */
-.jbox.sev-critical{--sev:var(--st-critical);--tint:rgba(208,59,59,.045)}
-.jbox.sev-high    {--sev:var(--st-serious); --tint:rgba(236,131,90,.06)}
-.jbox.sev-medium  {--sev:var(--st-warning); --tint:rgba(250,178,25,.07)}
-.jbox.sev-low     {--sev:var(--ink-3);      --tint:rgba(138,136,128,.05)}
-.jbox.sev-ok      {--sev:#cfe6cf}
+.jbox.sev-critical{--sev:var(--st-critical);--glow:208,59,59;  --ga:1;    --tint:rgba(208,59,59,.075)}
+.jbox.sev-high    {--sev:var(--st-serious); --glow:230,116,70; --ga:1;    --tint:rgba(236,131,90,.09)}
+.jbox.sev-medium  {--sev:var(--st-warning); --glow:236,163,16; --ga:1.05; --tint:rgba(250,178,25,.11)}
+.jbox.sev-low     {--sev:var(--ink-3);      --glow:138,136,128;--ga:.8;   --tint:rgba(138,136,128,.06)}
+.jbox.sev-ok      {--sev:#7bbd7b;           --glow:12,163,12;  --ga:.7;   --tint:rgba(12,163,12,.05)}
 .chip{display:inline-flex;align-items:center;gap:4px;border:1px solid var(--line-2);
   background:var(--surface-2);border-radius:11px;padding:1px 8px;font-size:10.5px;
   font-weight:600;letter-spacing:.04em;color:var(--ink-2);white-space:nowrap}
