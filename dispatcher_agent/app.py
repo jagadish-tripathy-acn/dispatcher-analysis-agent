@@ -99,6 +99,13 @@ def index():
     return render_template("dashboard.html")
 
 
+@app.route("/workflows")
+def workflows():
+    """Workflow (EPM) analysis. Self-contained page with its own sample data —
+    it does not read the Dispatcher logs, so it needs no window arguments."""
+    return render_template("workflows.html")
+
+
 @app.route("/api/stats")
 def api_stats():
     """System KPIs, per-job-type health boxes and the charts' source data."""

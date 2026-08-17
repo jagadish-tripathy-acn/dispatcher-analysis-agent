@@ -1,0 +1,977 @@
+<!DOCTYPE html>
+<html lang="en" data-palette="#2a78d6,#d03b3b,#eda100,#4a3aa7">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Workflow Analysis</title>
+<script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js"></script>
+<style>
+/* ══ tokens ════════════════════════════════════════════════════════════
+   Same light-theme tokens as the Dispatcher dashboard, so the two pages read
+   as one product. Every data colour below was validated against #ffffff. */
+:root{
+  --bg:#f4f5f7; --surface:#ffffff; --surface-2:#fafaf9; --surface-3:#f2f2f0;
+  --line:#e5e4df; --line-2:#d6d5cf; --line-3:#bfbeb8;
+  --ink:#1b1b19; --ink-2:#57564f; --ink-3:#8a8880;
+  --accent:#2a78d6; --accent-soft:#eaf1fb;
+
+  /* workflow states — the validated categorical set, mapped so a state keeps
+     the same hue it has on the Dispatcher page (done=blue, failed=red,
+     running=violet, cancelled=grey). */
+  --s-completed:#2a78d6; --s-hung:#d03b3b; --s-running:#4a3aa7; --s-aborted:#8a8880;
+
+  /* status — reserved, never reused as a series colour */
+  --st-good:#0ca30c; --st-warning:#fab219; --st-serious:#ec835a; --st-critical:#d03b3b;
+
+  --mono:ui-monospace,"Cascadia Mono","Consolas","Roboto Mono",monospace;
+  --sans:"Segoe UI",system-ui,-apple-system,sans-serif;
+  --shadow:0 1px 2px rgba(27,27,25,.05);
+  --radius:10px;
+}
+*{box-sizing:border-box}
+html,body{margin:0;padding:0}
+body{background:var(--bg);color:var(--ink);font:14px/1.45 var(--sans);
+     -webkit-font-smoothing:antialiased}
+h1,h2,h3,h4{margin:0;font-weight:600;letter-spacing:-.01em}
+button{font:inherit;color:inherit;cursor:pointer}
+a{color:var(--accent)}
+.num{font-family:var(--mono);font-variant-numeric:tabular-nums}
+.mono{font-family:var(--mono);font-size:12px}
+.muted{color:var(--ink-3)}
+.sr{position:absolute;width:1px;height:1px;overflow:hidden;clip:rect(0 0 0 0)}
+
+/* ══ header ═══════════════════════════════════════════════════════════ */
+.topbar{background:var(--surface);border-bottom:1px solid var(--line);
+        padding:12px 22px;display:flex;align-items:center;gap:18px;flex-wrap:wrap}
+.brand{display:flex;align-items:baseline;gap:10px}
+.brand h1{font-size:16px}
+.brand .tag{font-family:var(--mono);font-size:10.5px;letter-spacing:.08em;
+  text-transform:uppercase;color:var(--ink-3);border:1px solid var(--line-2);
+  border-radius:4px;padding:1px 5px}
+.topmeta{margin-left:auto;display:flex;align-items:center;gap:14px;
+  font-size:11.5px;color:var(--ink-3);font-family:var(--mono)}
+.ghost{background:var(--surface);border:1px solid var(--line-2);border-radius:6px;
+  padding:5px 11px;font-size:12px;color:var(--ink-2);text-decoration:none;
+  display:inline-block}
+.ghost:hover{background:var(--surface-3);border-color:var(--line-3)}
+
+/* ══ filter row — one row, above everything it affects ═════════════════ */
+.filters{background:var(--surface);border-bottom:1px solid var(--line);
+  padding:9px 22px;display:flex;align-items:center;gap:10px;flex-wrap:wrap;
+  position:sticky;top:0;z-index:20}
+.flabel{font-size:11px;letter-spacing:.06em;text-transform:uppercase;color:var(--ink-3)}
+.seg{display:flex;border:1px solid var(--line-2);border-radius:6px;overflow:hidden}
+.seg button{background:var(--surface);border:0;border-right:1px solid var(--line);
+  padding:5px 10px;font-size:12px;color:var(--ink-2)}
+.seg button:last-child{border-right:0}
+.seg button:hover{background:var(--surface-3)}
+.seg button[aria-pressed="true"]{background:var(--accent-soft);color:#1b4f8f;font-weight:600}
+input[type="text"],select{background:var(--surface);border:1px solid var(--line-2);
+  border-radius:6px;padding:5px 8px;font:12px var(--sans);color:var(--ink)}
+input:focus,select:focus,button:focus-visible{outline:2px solid #7aa9e4;outline-offset:1px}
+.divider{width:1px;height:22px;background:var(--line)}
+
+/* ══ layout ═══════════════════════════════════════════════════════════ */
+main{padding:18px 22px 48px;max-width:1680px;margin:0 auto}
+section{margin-bottom:20px}
+.shead{display:flex;align-items:center;gap:12px;flex-wrap:wrap;margin:0 0 10px}
+.shead h2{font-size:13px;letter-spacing:.04em;text-transform:uppercase;color:var(--ink-2)}
+.shead .hint{font-size:11.5px;color:var(--ink-3)}
+.shead .right{margin-left:auto;display:flex;align-items:center;gap:8px}
+
+/* ══ stat strip ═══════════════════════════════════════════════════════ */
+/* Explicit tracks, not repeat(auto-fit,…): an auto-repeat cannot be combined with
+   a flexible track, so "1.4fr repeat(auto-fit,…)" is invalid and the whole
+   declaration is dropped — the tiles then stack in one column. */
+.strip{display:grid;grid-template-columns:1.5fr repeat(5,minmax(0,1fr));
+  gap:1px;background:var(--line);border:1px solid var(--line);border-radius:var(--radius);
+  overflow:hidden;box-shadow:var(--shadow)}
+@media (max-width:1180px){.strip{grid-template-columns:1.5fr repeat(2,minmax(0,1fr))}}
+@media (max-width:720px) {.strip{grid-template-columns:1fr}}
+.st{background:var(--surface);padding:11px 13px 12px;position:relative}
+.st .k{font-size:10.5px;letter-spacing:.06em;text-transform:uppercase;color:var(--ink-3);
+  white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.st .v{font-family:var(--mono);font-variant-numeric:tabular-nums;font-size:20px;
+  font-weight:600;letter-spacing:-.02em;margin-top:3px;line-height:1.15}
+.st .s{font-size:11px;color:var(--ink-3);margin-top:3px;font-family:var(--mono)}
+/* The hero tile carries the headline the whole page exists for. A left rule in
+   the state's colour, but the state is also spelled out in the label + glyph. */
+.st.hero{border-left:3px solid var(--st-critical);background:
+  linear-gradient(180deg,rgba(208,59,59,.06),rgba(255,255,255,0) 70%),var(--surface)}
+.st.hero .v{font-size:40px;letter-spacing:-.03em;color:#a3282a}
+.st.hero .k{color:#a3282a;font-weight:600}
+.dot{display:inline-block;width:8px;height:8px;border-radius:2px;
+  vertical-align:baseline;margin-right:5px}
+
+/* ══ charts ═══════════════════════════════════════════════════════════ */
+/* Exactly two columns, not auto-fit: with auto-fit a wide viewport fits three
+   tracks, and a section holding two half-width figures leaves a dead column. */
+.grid2{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:14px}
+@media (max-width:900px){.grid2{grid-template-columns:1fr}}
+figure.chart{margin:0;background:var(--surface);border:1px solid var(--line);
+  border-radius:var(--radius);padding:13px 14px 11px;box-shadow:var(--shadow)}
+figure.chart.span{grid-column:1/-1}
+figcaption{margin-bottom:9px}
+figcaption h3{font-size:12.5px}
+figcaption .note{margin:3px 0 0;font-size:11.5px;color:var(--ink-3);line-height:1.4}
+.cwrap{position:relative;height:250px}
+.cwrap.tall{height:330px}
+.cwrap.short{height:186px}
+details.dt{margin-top:8px;border-top:1px solid var(--line);padding-top:6px}
+details.dt summary{font-size:11px;color:var(--ink-3);cursor:pointer;
+  letter-spacing:.04em;text-transform:uppercase}
+details.dt summary:hover{color:var(--ink-2)}
+details.dt .scroll{max-height:260px;overflow:auto;margin-top:7px}
+table{border-collapse:collapse;width:100%;font-size:12px}
+th,td{text-align:left;padding:5px 8px;border-bottom:1px solid var(--line);
+  white-space:nowrap}
+th{font-size:10.5px;letter-spacing:.05em;text-transform:uppercase;color:var(--ink-3);
+  font-weight:600;position:sticky;top:0;background:var(--surface-2);z-index:1}
+td.n,th.n{text-align:right;font-family:var(--mono);font-variant-numeric:tabular-nums}
+tbody tr:hover{background:var(--surface-2)}
+
+/* ══ small multiples ══════════════════════════════════════════════════
+   Nine workflows cannot be nine distinguishable hues, so each workflow gets
+   its own panel on a shared y-scale instead of its own colour in one legend.
+   Three fixed columns rather than auto-fit, because nine panels over an
+   auto-fitted seven-wide row leaves a ragged gap — and a third of the width is
+   what makes 45 daily bars per panel legible. */
+.sm{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:1px;
+  background:var(--line);border:1px solid var(--line);border-radius:var(--radius);
+  overflow:hidden;box-shadow:var(--shadow)}
+@media (max-width:900px){.sm{grid-template-columns:repeat(2,minmax(0,1fr))}}
+@media (max-width:600px){.sm{grid-template-columns:1fr}}
+.smp{background:var(--surface);padding:10px 12px 7px}
+.smp .t{font-size:11.5px;font-weight:600;white-space:nowrap;overflow:hidden;
+  text-overflow:ellipsis}
+.smp .m{font-size:11px;color:var(--ink-3);font-family:var(--mono);margin-top:1px}
+.smp .c{position:relative;height:88px;margin-top:6px}
+
+/* ══ heatmap ══════════════════════════════════════════════════════════
+   Sequential single hue, light→dark. Count is printed in every populated
+   cell, so intensity is a scanning aid and never the only encoding. */
+.hm{overflow:auto}
+.hmgrid{display:grid;gap:2px;min-width:620px}
+.hmc{font-size:11px;font-family:var(--mono);text-align:center;padding:6px 4px;
+  border-radius:3px;color:var(--ink-2)}
+.hmc.zero{color:#c4c3bd}
+.hmh{font-size:10.5px;color:var(--ink-3);padding:4px;text-align:center;
+  writing-mode:vertical-rl;transform:rotate(180deg);white-space:nowrap;
+  justify-self:center}
+.hmr{font-size:11.5px;color:var(--ink-2);padding:6px 9px 6px 2px;white-space:nowrap;
+  text-align:right}
+.hmr b{font-family:var(--mono);color:var(--ink-3);font-weight:400;margin-left:6px}
+.hmleg{display:flex;align-items:center;gap:6px;font-size:11px;color:var(--ink-3);
+  margin-top:9px}
+.hmleg i{width:22px;height:9px;border-radius:2px;display:inline-block}
+
+/* ══ chips ════════════════════════════════════════════════════════════ */
+.chip{display:inline-flex;align-items:center;gap:5px;font-size:11px;
+  border:1px solid var(--line-2);border-radius:999px;padding:1px 8px;color:var(--ink-2)}
+.chip.crit{border-color:#e9b4b4;color:#a3282a;background:#fdf2f2}
+.chip.warn{border-color:#eed49a;color:#8a6100;background:#fdf8ec}
+.chip.ok{border-color:#b7dcb7;color:#0a7d0a;background:#f2faf2}
+
+/* ══ footnote ═════════════════════════════════════════════════════════ */
+.defs{background:var(--surface);border:1px solid var(--line);border-radius:var(--radius);
+  padding:13px 15px;box-shadow:var(--shadow);font-size:12px;color:var(--ink-2)}
+.defs dl{margin:0;display:grid;grid-template-columns:auto 1fr;gap:5px 14px}
+.defs dt{font-weight:600;white-space:nowrap}
+.defs dd{margin:0;color:var(--ink-3)}
+</style>
+</head>
+<body>
+
+<header class="topbar">
+  <div class="brand">
+    <h1>Workflow Analysis</h1>
+  </div>
+  <div class="topmeta">
+    <span id="asof"></span>
+    <a class="ghost" href="/">← Dispatcher</a>
+  </div>
+</header>
+
+<div class="filters">
+  <span class="flabel">Window</span>
+  <div class="seg" id="win" role="group" aria-label="Time window">
+    <button data-win="all"  aria-pressed="true">All</button>
+    <button data-win="oct"  aria-pressed="false">October</button>
+    <button data-win="nov"  aria-pressed="false">November</button>
+    <button data-win="14d"  aria-pressed="false">Last 14 days</button>
+  </div>
+  <span class="divider"></span>
+  <span class="flabel">Workflow</span>
+  <select id="fwf" aria-label="Filter by workflow template"><option value="">All templates</option></select>
+  <span class="flabel">Stuck at</span>
+  <select id="ftask" aria-label="Filter by stuck task type"><option value="">Any task</option></select>
+  <span class="divider"></span>
+  <input type="text" id="fq" placeholder="Search workflow or assignee" aria-label="Search" style="width:210px">
+  <button class="ghost" id="reset">Reset</button>
+  <span class="topmeta" id="fcount" style="margin-left:auto"></span>
+</div>
+
+<main>
+  <section>
+    <div class="strip" id="strip"></div>
+  </section>
+
+  <section>
+    <div class="shead">
+      <h2>Volume and outcome</h2>
+      <span class="hint">every workflow instance in the window, by the state it is in now</span>
+    </div>
+    <div class="grid2">
+      <figure class="chart span">
+        <figcaption>
+          <h3>Workflow instances per day, by current state</h3>
+          <p class="note">Stacked so the daily total is readable and the hung share is visible
+             against it. Hung instances are plotted on the day they entered the task they
+             are still sitting in — not the day they were noticed.</p>
+        </figcaption>
+        <div class="cwrap tall"><canvas id="c-trend"></canvas></div>
+        <details class="dt"><summary>Data table</summary><div class="scroll" id="c-trend-dt"></div></details>
+      </figure>
+      <figure class="chart">
+        <figcaption>
+          <h3>Hung vs completed, daily</h3>
+          <p class="note">Two counts on one axis. A rising red line that does not
+             track the blue is backlog forming, not busier days.</p>
+        </figcaption>
+        <div class="cwrap"><canvas id="c-rate"></canvas></div>
+        <details class="dt"><summary>Data table</summary><div class="scroll" id="c-rate-dt"></div></details>
+      </figure>
+      <figure class="chart">
+        <figcaption>
+          <h3>Hung workflows by age</h3>
+          <p class="note">How long each hung instance has sat without a state change.
+             Anything past 7 days has outlived any plausible human review time.</p>
+        </figcaption>
+        <div class="cwrap"><canvas id="c-age"></canvas></div>
+        <details class="dt"><summary>Data table</summary><div class="scroll" id="c-age-dt"></div></details>
+      </figure>
+    </div>
+  </section>
+
+  <section>
+    <div class="shead">
+      <h2>Where workflows are stuck</h2>
+      <span class="hint">the two independent breakdowns of the same 174 instances</span>
+    </div>
+    <div class="grid2">
+      <figure class="chart">
+        <figcaption>
+          <h3>Hung workflows by stuck task type</h3>
+          <p class="note">Which EPM task the instance cannot get past. A single task type
+             dominating points at that task's handler or signoff rule, not at the workflows.</p>
+        </figcaption>
+        <div class="cwrap"><canvas id="c-task"></canvas></div>
+        <details class="dt"><summary>Data table</summary><div class="scroll" id="c-task-dt"></div></details>
+      </figure>
+      <figure class="chart">
+        <figcaption>
+          <h3>Hung workflows by template</h3>
+          <p class="note">Which workflow template the instance belongs to, ranked. Read
+             beside the task chart: same instances, different question.</p>
+        </figcaption>
+        <div class="cwrap"><canvas id="c-wf"></canvas></div>
+        <details class="dt"><summary>Data table</summary><div class="scroll" id="c-wf-dt"></div></details>
+      </figure>
+      <figure class="chart span">
+        <figcaption>
+          <h3>Template × stuck task</h3>
+          <p class="note">The cross-tab the two bar charts cannot show. A dark cell is a
+             specific template failing at a specific task — the actionable pair. Counts are
+             printed, so colour only speeds up the scan.</p>
+        </figcaption>
+        <div class="hm" id="c-heat"></div>
+        <details class="dt"><summary>Data table</summary><div class="scroll" id="c-heat-dt"></div></details>
+      </figure>
+    </div>
+  </section>
+
+  <section>
+    <div class="shead">
+      <h2>Per template, day by day</h2>
+      <span class="hint">shared y-scale — panel heights are comparable across templates</span>
+    </div>
+    <div class="sm" id="c-small"></div>
+  </section>
+
+  <section>
+    <div class="shead">
+      <h2>Hung workflow instances</h2>
+      <span class="hint" id="tblnote"></span>
+      <div class="right">
+        <button class="ghost" id="csv">Export CSV</button>
+      </div>
+    </div>
+    <figure class="chart" style="padding-top:9px">
+      <div class="scroll" style="max-height:430px;overflow:auto" id="tbl"></div>
+    </figure>
+  </section>
+
+  <section>
+    <div class="defs">
+      <dl>
+        <dt>Hung</dt>
+        <dd>Still sitting in an EPM task with no state change for more than 48 hours, and
+            not completed or aborted. The threshold is a definition, not a measurement —
+            change it and the count changes.</dd>
+        <dt>Age</dt>
+        <dd>Time from the last recorded state change to the as-of timestamp above. It is
+            not the total workflow duration.</dd>
+        <dt>Completed / Aborted</dt>
+        <dd>Reached a terminal state in the window. Aborted covers operator cancellation
+            and template-level abort, which are not distinguished in the source.</dd>
+        <dt>In progress</dt>
+        <dd>Active and moving — a state change within the last 48 hours. Healthy, not hung.</dd>
+        <dt>Source</dt>
+        <dd id="srcnote"></dd>
+      </dl>
+    </div>
+  </section>
+</main>
+
+<script>
+/* ═══════════════════════════════════════════════════════════════════════
+   Sample dataset
+   ───────────────────────────────────────────────────────────────────────
+   Self-contained so the page opens standalone. Everything below is derived
+   from the single RAW array, so wiring this to a real endpoint is one change:
+   replace build() with a fetch that returns the same record shape.
+
+   Deliberately seeded rather than Math.random() — a dashboard whose numbers
+   change on every refresh cannot be discussed in a meeting.
+   ═══════════════════════════════════════════════════════════════════════ */
+const AS_OF = new Date("2024-11-15T18:00:00");
+const WINDOW_START = new Date("2024-10-01T00:00:00");
+/** Hours from the first day of the window to the as-of point. No hung instance is
+    aged past this, or the headline count would not survive its own date filter. */
+const SPAN_H = (AS_OF - WINDOW_START) / 36e5;
+
+const TEMPLATES = [
+  "CN_Change_Notice_Review", "ECR_Impact_Analysis",  "Part_Release_Approval",
+  "Document_Approval",       "BOM_Change_Review",    "Supplier_Change_Request",
+  "Deviation_Request",       "Design_Review_Gate",   "Manufacturing_Release",
+];
+const TASKS = [
+  "EPMReviewTask", "EPMDoTask", "EPMValidateTask",
+  "EPMConditionTask", "EPMAddStatusTask", "EPMSelectSignoffTask", "EPMTask",
+];
+const GROUPS = ["Engineering", "Manufacturing", "Quality", "Supplier Mgmt",
+                "Document Control", "Program Office"];
+
+/** mulberry32 — small, stable, no dependency. */
+function rng(seed){
+  return function(){
+    seed |= 0; seed = seed + 0x6D2B79F5 | 0;
+    let t = Math.imul(seed ^ seed >>> 15, 1 | seed);
+    t = t + Math.imul(t ^ t >>> 7, 61 | t) ^ t;
+    return ((t ^ t >>> 14) >>> 0) / 4294967296;
+  };
+}
+const DAY = 864e5;
+
+function build(){
+  const r = rng(20241115);
+  const pick = a => a[Math.floor(r() * a.length)];
+  /* Weighted picks so the shape looks like a real estate of workflows: a couple
+     of heavy templates, a long tail, and review/do tasks dominating the stalls. */
+  const wpick = (a, w) => {
+    const total = w.reduce((s, x) => s + x, 0);
+    let t = r() * total;
+    for(let i = 0; i < a.length; i++){ t -= w[i]; if(t <= 0) return a[i]; }
+    return a[a.length - 1];
+  };
+  const TW = [22, 17, 14, 12, 10, 8, 7, 6, 4];              // template weights
+  const KW = [30, 22, 13, 10, 9, 9, 7];                      // stuck-task weights
+
+  const start = WINDOW_START;
+  const days = Math.ceil((AS_OF - start) / DAY);             // 46, the last one partial
+  const rows = [];
+  let n = 0;
+
+  /* --- 174 hung instances ------------------------------------------------
+     Age is skewed long: most stalls are recent, but a stubborn tail has been
+     sitting for weeks, which is exactly the tail the age chart exists to show. */
+  for(let i = 0; i < 174; i++){
+    const ageH = Math.round(48 + Math.pow(r(), 2.1) * (SPAN_H - 60));
+    const at = new Date(AS_OF - ageH * 36e5);
+    rows.push({
+      id: "WF-" + String(++n + 41000),
+      tpl: wpick(TEMPLATES, TW),
+      state: "hung",
+      task: wpick(TASKS, KW),
+      group: pick(GROUPS),
+      at,                          // entered the task it is still sitting in
+      ageH,
+    });
+  }
+  /* --- terminal and active instances ------------------------------------
+     Volume rises through the window with a weekday rhythm, so the trend chart
+     has a shape to read rather than flat noise. */
+  for(let d = 0; d < days; d++){
+    const day = new Date(start.getTime() + d * DAY);
+    const dow = day.getDay();
+    const weekend = dow === 0 || dow === 6;
+    /* The final day is cut short by the as-of point. Both the timestamps and the
+       volume are scaled to the elapsed part of it, so nothing is generated into
+       the future and the last column is honestly short rather than dropped. */
+    const span = Math.min(DAY, AS_OF - day.getTime());
+    const frac = span / DAY;
+    const base = (70 + d * 1.6) * (weekend ? .28 : 1) * frac;
+    const done = Math.round(base * (.86 + r() * .16));
+    const abort = Math.round(base * (.012 + r() * .022));
+    const run = d > days - 4 ? Math.round(base * (.10 + r() * .12)) : 0;
+    const add = (k, st) => {
+      for(let i = 0; i < k; i++){
+        rows.push({
+          id: "WF-" + String(++n + 41000),
+          tpl: wpick(TEMPLATES, TW), state: st,
+          task: st === "running" ? wpick(TASKS, KW) : null,
+          group: pick(GROUPS),
+          at: new Date(day.getTime() + Math.floor(r() * span)),
+          ageH: null,
+        });
+      }
+    };
+    add(done, "completed"); add(abort, "aborted"); add(run, "running");
+  }
+  return rows;
+}
+const RAW = build();
+
+/* ═══════════════════════════════════════════════════════════════════════
+   Chart.js house style — identical to the Dispatcher dashboard
+   ═══════════════════════════════════════════════════════════════════════ */
+const C = {
+  blue:"#2a78d6", red:"#d03b3b", violet:"#4a3aa7", grey:"#8a8880",
+  /* sequential, one hue light→dark — for magnitude, never for identity */
+  ramp:["#fbeeed","#f4cfcb","#e79f98","#d76a62","#c23b39","#96282b"],
+  grid:"#ececE8", ink2:"#57564f", ink3:"#8a8880", line:"#d6d5cf",
+};
+const STATES = [
+  {k:"completed", label:"Completed",   c:C.blue,   glyph:"✓"},
+  {k:"running",   label:"In progress", c:C.violet, glyph:"▸"},
+  {k:"aborted",   label:"Aborted",     c:C.grey,   glyph:"⊘"},
+  {k:"hung",      label:"Hung",        c:C.red,    glyph:"✕"},
+];
+
+Chart.defaults.font.family = '"Segoe UI",system-ui,-apple-system,sans-serif';
+Chart.defaults.font.size = 11;
+Chart.defaults.color = C.ink3;
+Chart.defaults.maintainAspectRatio = false;
+Chart.defaults.animation.duration = 240;
+Chart.defaults.elements.line.borderWidth = 2;
+Chart.defaults.elements.line.tension = .25;
+Chart.defaults.elements.point.radius = 0;
+Chart.defaults.elements.point.hoverRadius = 4.5;
+Chart.defaults.elements.point.hitRadius = 22;
+/* Bar geometry is a dataset option in Chart.js 4, not an element default. */
+const BAR = {maxBarThickness:24, borderRadius:4, borderSkipped:"start"};
+/** 2px surface gap on the data end of a stacked segment. */
+const GAP_TOP = {borderColor:"#ffffff", borderWidth:{top:2, right:0, bottom:0, left:0}};
+Chart.defaults.plugins.legend.position = "top";
+Chart.defaults.plugins.legend.align = "end";
+Object.assign(Chart.defaults.plugins.legend.labels, {
+  usePointStyle:true, pointStyle:"rectRounded", boxWidth:8, boxHeight:8,
+  padding:14, color:C.ink2, font:{size:11},
+});
+Object.assign(Chart.defaults.plugins.tooltip, {
+  backgroundColor:"#ffffff", titleColor:"#1b1b19", bodyColor:"#1b1b19",
+  borderColor:C.line, borderWidth:1, cornerRadius:6, padding:10, caretSize:5,
+  displayColors:true, usePointStyle:true, boxWidth:8, boxHeight:8, boxPadding:4,
+  titleFont:{size:11, weight:"600"}, bodyFont:{size:12},
+});
+
+/** Vertical hairline under the cursor on time series. */
+Chart.register({
+  id:"crosshair",
+  afterDatasetsDraw(c){
+    if(c.config.type !== "line") return;
+    const act = c.tooltip && c.tooltip._active;
+    if(!act || !act.length) return;
+    const g = c.ctx, x = act[0].element.x;
+    g.save(); g.beginPath(); g.lineWidth = 1; g.strokeStyle = "#c9c8c2";
+    g.moveTo(x, c.chartArea.top); g.lineTo(x, c.chartArea.bottom); g.stroke(); g.restore();
+  },
+});
+/** Selective direct labels at the data end — opt in per chart. */
+Chart.register({
+  id:"valueLabels",
+  afterDatasetsDraw(c, _a, opts){
+    if(!opts || !opts.enabled) return;
+    const fmt = opts.format || (v => n0(v));
+    const horiz = c.options.indexAxis === "y";
+    const g = c.ctx;
+    g.save();
+    g.font = '600 11px ' + Chart.defaults.font.family;
+    g.fillStyle = C.ink2;
+    c.data.datasets.forEach((ds, i) => {
+      if(!c.isDatasetVisible(i)) return;
+      c.getDatasetMeta(i).data.forEach((mark, j) => {
+        const v = ds.data[j];
+        if(v == null || v === 0) return;
+        g.textAlign = horiz ? "left" : "center";
+        g.textBaseline = horiz ? "middle" : "bottom";
+        g.fillText(fmt(v), mark.x + (horiz ? 7 : 0), mark.y + (horiz ? 0 : -5));
+      });
+    });
+    g.restore();
+  },
+});
+
+const AX = {
+  y:{grid:{color:C.grid, drawTicks:false}, border:{display:false},
+     ticks:{padding:6, maxTicksLimit:6}},
+  x:{grid:{display:false}, border:{color:C.line},
+     ticks:{padding:4, maxRotation:0, autoSkipPadding:14}},
+};
+const yCat = {grid:{display:false}, border:{display:false}, ticks:{padding:4, font:{size:11}}};
+const xNum = {grid:{color:C.grid, drawTicks:false}, border:{display:false},
+              ticks:{padding:4, maxTicksLimit:5}};
+
+/* ═══════════════════════════════════════════════════════════════════════
+   Helpers
+   ═══════════════════════════════════════════════════════════════════════ */
+const el = id => document.getElementById(id);
+const n0 = v => (v == null ? "–" : Math.round(v).toLocaleString("en-US"));
+const esc = s => String(s).replace(/[&<>"']/g, m =>
+  ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[m]));
+const iso = d => d.toISOString().slice(0, 10);
+const dLabel = d => d.toLocaleDateString("en-GB", {day:"2-digit", month:"short"});
+
+/** An age in hours as prose: "14h", "3d 4h", "5w 2d". Raw hour counts are
+    unreadable past a couple of days, and these ages run to six weeks. */
+function fmtAge(h){
+  if(h == null) return "–";
+  if(h < 48) return Math.round(h) + "h";
+  const d = Math.floor(h / 24);
+  if(d < 14) return d + "d " + Math.round(h - d * 24) + "h";
+  const w = Math.floor(d / 7);
+  return w + "w " + (d - w * 7) + "d";
+}
+function tally(rows, key){
+  const m = new Map();
+  rows.forEach(r => { const k = key(r); if(k != null) m.set(k, (m.get(k) || 0) + 1); });
+  return m;
+}
+function fillTable(id, cols, rows){
+  const h = el(id + "-dt");
+  if(!h) return;
+  h.innerHTML = `<table><thead><tr>${
+    cols.map((c, i) => `<th${i ? ' class="n"' : ""}>${esc(c)}</th>`).join("")
+  }</tr></thead><tbody>${
+    rows.map(r => `<tr>${r.map((v, i) =>
+      `<td${i ? ' class="n"' : ""}>${esc(v)}</td>`).join("")}</tr>`).join("")
+  }</tbody></table>`;
+}
+
+/* ═══════════════════════════════════════════════════════════════════════
+   State
+   ═══════════════════════════════════════════════════════════════════════ */
+const S = {win:"all", tpl:"", task:"", q:"", charts:{}};
+
+/* Bare "2024-10-01" parses as UTC midnight while the records are stamped at local
+   midnight, so in any timezone east of UTC the first hours of day one fall outside
+   the window. Both sides use the same local-time form. */
+const WINDOWS = {
+  all: {from:WINDOW_START, to:AS_OF, label:"1 Oct – 15 Nov 2024"},
+  oct: {from:WINDOW_START, to:new Date("2024-11-01T00:00:00"), label:"October 2024"},
+  nov: {from:new Date("2024-11-01T00:00:00"), to:AS_OF, label:"1 – 15 Nov 2024"},
+  "14d":{from:new Date(AS_OF - 14 * DAY), to:AS_OF, label:"last 14 days"},
+};
+
+function filtered(){
+  const w = WINDOWS[S.win];
+  const q = S.q.trim().toLowerCase();
+  return RAW.filter(r =>
+    r.at >= w.from && r.at <= w.to &&
+    (!S.tpl  || r.tpl === S.tpl) &&
+    (!S.task || r.task === S.task) &&
+    (!q || r.tpl.toLowerCase().includes(q) || r.group.toLowerCase().includes(q) ||
+           r.id.toLowerCase().includes(q))
+  );
+}
+function mkChart(id, cfg){
+  const cv = el(id);
+  if(!cv) return;
+  if(S.charts[id]) S.charts[id].destroy();
+  S.charts[id] = new Chart(cv, cfg);
+}
+
+/* ═══════════════════════════════════════════════════════════════════════
+   Render — stat strip
+   ═══════════════════════════════════════════════════════════════════════ */
+function renderStrip(rows){
+  const by = {};
+  STATES.forEach(s => by[s.k] = rows.filter(r => r.state === s.k).length);
+  const total = rows.length;
+  const hung = rows.filter(r => r.state === "hung");
+  const ages = hung.map(r => r.ageH).sort((a, b) => a - b);
+  const med = ages.length ? ages[Math.floor(ages.length / 2)] : null;
+  const oldest = ages.length ? ages[ages.length - 1] : null;
+  const over7 = ages.filter(a => a > 168).length;
+  const terminal = by.completed + by.aborted;
+  const pct = v => total ? (v / total * 100).toFixed(1) + "%" : "–";
+
+  el("strip").innerHTML = `
+    <div class="st hero">
+      <div class="k">✕ Hung workflows</div>
+      <div class="v">${n0(by.hung)}</div>
+      <div class="s">${pct(by.hung)} of ${n0(total)} instances</div>
+    </div>
+    <div class="st">
+      <div class="k"><span class="dot" style="background:${C.blue}"></span>✓ Completed</div>
+      <div class="v">${n0(by.completed)}</div>
+      <div class="s">${terminal ? (by.completed / terminal * 100).toFixed(1) + "% of terminal" : "–"}</div>
+    </div>
+    <div class="st">
+      <div class="k"><span class="dot" style="background:${C.violet}"></span>▸ In progress</div>
+      <div class="v">${n0(by.running)}</div>
+      <div class="s">moving normally</div>
+    </div>
+    <div class="st">
+      <div class="k"><span class="dot" style="background:${C.grey}"></span>⊘ Aborted</div>
+      <div class="v">${n0(by.aborted)}</div>
+      <div class="s">${pct(by.aborted)} of instances</div>
+    </div>
+    <div class="st">
+      <div class="k">Median hung age</div>
+      <div class="v">${fmtAge(med)}</div>
+      <div class="s">oldest ${fmtAge(oldest)}</div>
+    </div>
+    <div class="st">
+      <div class="k">Stuck over 7 days</div>
+      <div class="v">${n0(over7)}</div>
+      <div class="s">${by.hung ? (over7 / by.hung * 100).toFixed(0) + "% of hung" : "–"}</div>
+    </div>`;
+}
+
+/* ═══════════════════════════════════════════════════════════════════════
+   Render — trend (stacked columns) and hung-vs-completed (line)
+   ═══════════════════════════════════════════════════════════════════════ */
+function dayKeys(rows){
+  const set = new Set(rows.map(r => iso(r.at)));
+  return [...set].sort();
+}
+function renderTrend(rows){
+  const keys = dayKeys(rows);
+  const series = STATES.map(s => {
+    const m = tally(rows.filter(r => r.state === s.k), r => iso(r.at));
+    return {...s, data: keys.map(k => m.get(k) || 0)};
+  });
+  mkChart("c-trend", {
+    type:"bar",
+    data:{
+      labels: keys.map(k => dLabel(new Date(k))),
+      datasets: series.map(s => ({
+        label:`${s.glyph} ${s.label}`, data:s.data, backgroundColor:s.c,
+        ...BAR, ...GAP_TOP,
+      })),
+    },
+    options:{
+      scales:{x:{...AX.x, stacked:true}, y:{...AX.y, stacked:true,
+        title:{display:true, text:"instances", color:C.ink3, font:{size:10.5}}}},
+      interaction:{mode:"index", intersect:false},
+      plugins:{tooltip:{callbacks:{
+        footer: items => "total " + n0(items.reduce((s, i) => s + i.parsed.y, 0)),
+      }}},
+    },
+  });
+  fillTable("c-trend", ["Day", ...STATES.map(s => s.label), "Total"],
+    keys.map((k, i) => [dLabel(new Date(k)), ...series.map(s => n0(s.data[i])),
+      n0(series.reduce((a, s) => a + s.data[i], 0))]));
+}
+
+function renderRate(rows){
+  const keys = dayKeys(rows);
+  const hm = tally(rows.filter(r => r.state === "hung"), r => iso(r.at));
+  const cm = tally(rows.filter(r => r.state === "completed"), r => iso(r.at));
+  const hd = keys.map(k => hm.get(k) || 0), cd = keys.map(k => cm.get(k) || 0);
+  mkChart("c-rate", {
+    type:"line",
+    data:{
+      labels: keys.map(k => dLabel(new Date(k))),
+      datasets:[
+        {label:"✓ Completed", data:cd, borderColor:C.blue, backgroundColor:C.blue},
+        {label:"✕ Went hung", data:hd, borderColor:C.red,  backgroundColor:C.red},
+      ],
+    },
+    options:{
+      scales:{x:AX.x, y:{...AX.y, beginAtZero:true,
+        title:{display:true, text:"instances", color:C.ink3, font:{size:10.5}}}},
+      interaction:{mode:"index", intersect:false},
+    },
+  });
+  fillTable("c-rate", ["Day", "Completed", "Went hung"],
+    keys.map((k, i) => [dLabel(new Date(k)), n0(cd[i]), n0(hd[i])]));
+}
+
+/* ═══════════════════════════════════════════════════════════════════════
+   Render — age distribution
+   ═══════════════════════════════════════════════════════════════════════ */
+const AGE_BINS = [
+  {label:"2–3 d",   lo:48,  hi:72},
+  {label:"3–7 d",   lo:72,  hi:168},
+  {label:"1–2 wk",  lo:168, hi:336},
+  {label:"2–4 wk",  lo:336, hi:672},
+  {label:"4–6 wk",  lo:672, hi:1008},
+  {label:"over 6 wk", lo:1008, hi:Infinity},
+];
+function renderAge(rows){
+  const hung = rows.filter(r => r.state === "hung");
+  const data = AGE_BINS.map(b => hung.filter(r => r.ageH >= b.lo && r.ageH < b.hi).length);
+  mkChart("c-age", {
+    type:"bar",
+    data:{labels: AGE_BINS.map(b => b.label),
+      /* One series → no legend box; the title names it. Single hue, because
+         the bins are ordered magnitude, not nine separate identities. */
+      datasets:[{label:"Hung workflows", data, backgroundColor:C.red, ...BAR}]},
+    options:{
+      scales:{x:AX.x, y:{...AX.y, beginAtZero:true, grace:"12%"}},
+      plugins:{legend:{display:false}, valueLabels:{enabled:true}},
+    },
+  });
+  fillTable("c-age", ["Age band", "Hung workflows", "Share"],
+    AGE_BINS.map((b, i) => [b.label, n0(data[i]),
+      hung.length ? (data[i] / hung.length * 100).toFixed(1) + "%" : "–"]));
+}
+
+/* ═══════════════════════════════════════════════════════════════════════
+   Render — the two breakdowns (horizontal bars, ranked)
+   ═══════════════════════════════════════════════════════════════════════ */
+function renderRanked(id, rows, key, axisTitle){
+  const hung = rows.filter(r => r.state === "hung");
+  const m = [...tally(hung, key).entries()].sort((a, b) => b[1] - a[1]);
+  /* Round the axis up to a whole step so the last tick is a round number. Left to
+     itself Chart.js prints the axis maximum as a tick — "0 20 40 46", or "46.9"
+     once the max is nudged off a step boundary. */
+  const top = m.length ? m[0][1] : 1;
+  const stepSize = Math.max(1, Math.pow(10, Math.floor(Math.log10(top))));
+  const axMax = Math.ceil(top / stepSize) * stepSize;
+  mkChart(id, {
+    type:"bar",
+    data:{labels: m.map(e => e[0]),
+      datasets:[{label:"Hung workflows", data:m.map(e => e[1]),
+        backgroundColor:C.red, ...BAR}]},
+    options:{
+      indexAxis:"y",
+      /* Room for the direct labels instead of axis grace: grace rounds the axis
+         up to the next nice tick (60 for a 46 maximum) and the bars read short. */
+      layout:{padding:{right:34}},
+      scales:{y:yCat, x:{...xNum, beginAtZero:true, max:axMax,
+        ticks:{...xNum.ticks, stepSize, maxTicksLimit:8},
+        title:{display:true, text:axisTitle, color:C.ink3, font:{size:10.5}}}},
+      plugins:{legend:{display:false}, valueLabels:{enabled:true}},
+    },
+  });
+  const tot = hung.length;
+  fillTable(id, [axisTitle === "hung instances" ? "Name" : "Name", "Hung", "Share"],
+    m.map(e => [e[0], n0(e[1]), tot ? (e[1] / tot * 100).toFixed(1) + "%" : "–"]));
+}
+
+/* ═══════════════════════════════════════════════════════════════════════
+   Render — template × task heatmap (plain HTML, no extra dependency)
+   ═══════════════════════════════════════════════════════════════════════ */
+function renderHeat(rows){
+  const hung = rows.filter(r => r.state === "hung");
+  const tpls = [...new Set(hung.map(r => r.tpl))]
+    .sort((a, b) => hung.filter(r => r.tpl === b).length - hung.filter(r => r.tpl === a).length);
+  const tasks = TASKS.filter(t => hung.some(r => r.task === t));
+  const cell = {};
+  hung.forEach(r => { const k = r.tpl + "|" + r.task; cell[k] = (cell[k] || 0) + 1; });
+  const max = Math.max(1, ...Object.values(cell));
+  /* Step the sequential ramp by count. Deep steps get white text so the number
+     stays legible — the count is the primary encoding, colour is the scan aid. */
+  const step = v => v === 0 ? -1 : Math.min(C.ramp.length - 1,
+    Math.floor(v / max * C.ramp.length * .999));
+
+  if(!tasks.length){
+    el("c-heat").innerHTML =
+      `<p class="muted" style="margin:4px 0 2px">No hung workflows in this selection.</p>`;
+    fillTable("c-heat", ["Template"], []);
+    return;
+  }
+  const cols = `minmax(150px,auto) repeat(${tasks.length},minmax(58px,1fr))`;
+  let h = `<div class="hmgrid" style="grid-template-columns:${cols}">
+    <div></div>${tasks.map(t => `<div class="hmh">${esc(t)}</div>`).join("")}`;
+  tpls.forEach(tp => {
+    const rowTotal = hung.filter(r => r.tpl === tp).length;
+    h += `<div class="hmr">${esc(tp)}<b>${n0(rowTotal)}</b></div>`;
+    tasks.forEach(tk => {
+      const v = cell[tp + "|" + tk] || 0, s = step(v);
+      const bg = s < 0 ? "var(--surface-3)" : C.ramp[s];
+      /* From step 3 the fill is dark enough that --ink-2 falls under 4.5:1.
+         The count is the primary encoding, so it flips to white and stays legible. */
+      const fg = s >= 3 ? "#ffffff" : "";
+      h += `<div class="hmc${v ? "" : " zero"}" style="background:${bg}${fg ? ";color:" + fg : ""}"
+              title="${esc(tp)} — ${esc(tk)}: ${v} hung">${v || "·"}</div>`;
+    });
+  });
+  h += `</div><div class="hmleg">0
+    ${C.ramp.map(c => `<i style="background:${c}"></i>`).join("")} ${max} hung instances</div>`;
+  el("c-heat").innerHTML = h;
+
+  fillTable("c-heat", ["Template", ...tasks, "Total"],
+    tpls.map(tp => [tp, ...tasks.map(tk => n0(cell[tp + "|" + tk] || 0)),
+      n0(hung.filter(r => r.tpl === tp).length)]));
+}
+
+/* ═══════════════════════════════════════════════════════════════════════
+   Render — small multiples, one panel per template
+   ───────────────────────────────────────────────────────────────────────
+   This is the reference report's clustered-column chart, decomposed. Nine
+   templates in one legend needs nine distinguishable hues, which do not exist
+   in a validated light-theme palette; nine panels on a shared scale carry the
+   same comparison without asking anyone to tell two purples apart.
+   ═══════════════════════════════════════════════════════════════════════ */
+function renderSmall(rows){
+  const hung = rows.filter(r => r.state === "hung");
+  const keys = dayKeys(hung);
+  const tpls = [...new Set(hung.map(r => r.tpl))]
+    .sort((a, b) => hung.filter(r => r.tpl === b).length - hung.filter(r => r.tpl === a).length);
+  const perTpl = tpls.map(tp => {
+    const m = tally(hung.filter(r => r.tpl === tp), r => iso(r.at));
+    return {tp, data: keys.map(k => m.get(k) || 0), total: hung.filter(r => r.tpl === tp).length};
+  });
+  const max = Math.max(1, ...perTpl.flatMap(p => p.data));   // shared y-scale
+
+  /* Replacing innerHTML removes the canvases but not the Chart objects that own
+     them, and a narrowing filter renders fewer panels than last time — so the
+     surplus charts have to be destroyed explicitly or they leak on every change. */
+  Object.keys(S.charts).filter(k => k.startsWith("sm")).forEach(k => {
+    S.charts[k].destroy(); delete S.charts[k];
+  });
+
+  el("c-small").innerHTML = perTpl.map((p, i) => `
+    <div class="smp">
+      <div class="t" title="${esc(p.tp)}">${esc(p.tp)}</div>
+      <div class="m">${n0(p.total)} hung · peak ${n0(Math.max(0, ...p.data))}/day</div>
+      <div class="c"><canvas id="sm${i}"></canvas></div>
+    </div>`).join("") ||
+    `<div class="smp muted" style="grid-column:1/-1">No hung workflows in this selection.</div>`;
+
+  perTpl.forEach((p, i) => mkChart("sm" + i, {
+    type:"bar",
+    data:{labels: keys.map(k => dLabel(new Date(k))),
+      datasets:[{label:"hung", data:p.data, backgroundColor:C.red,
+        maxBarThickness:10, borderRadius:2, borderSkipped:"start"}]},
+    options:{
+      scales:{
+        x:{display:false},
+        y:{min:0, max, grid:{color:C.grid, drawTicks:false}, border:{display:false},
+           ticks:{maxTicksLimit:3, font:{size:9.5}, padding:3}},
+      },
+      plugins:{legend:{display:false}, tooltip:{callbacks:{
+        title: it => dLabel(new Date(keys[it[0].dataIndex])),
+        label: it => `${p.tp}: ${it.parsed.y} hung`,
+      }}},
+    },
+  }));
+}
+
+/* ═══════════════════════════════════════════════════════════════════════
+   Render — detail table
+   ═══════════════════════════════════════════════════════════════════════ */
+function hungRows(rows){
+  return rows.filter(r => r.state === "hung").sort((a, b) => b.ageH - a.ageH);
+}
+function renderTable(rows){
+  const h = hungRows(rows);
+  el("tblnote").textContent =
+    `${h.length} instance${h.length === 1 ? "" : "s"}, oldest first`;
+  el("tbl").innerHTML = `<table><thead><tr>
+      <th>Instance</th><th>Template</th><th>Stuck at task</th><th>Owning group</th>
+      <th class="n">Stuck since</th><th class="n">Age</th><th>Flag</th>
+    </tr></thead><tbody>${h.map(r => {
+      const chip = r.ageH > 336 ? '<span class="chip crit">✕ over 2 weeks</span>'
+                 : r.ageH > 168 ? '<span class="chip warn">△ over 7 days</span>'
+                 : '<span class="chip">· recent</span>';
+      return `<tr>
+        <td class="mono">${esc(r.id)}</td>
+        <td>${esc(r.tpl)}</td>
+        <td class="mono">${esc(r.task)}</td>
+        <td>${esc(r.group)}</td>
+        <td class="n">${esc(dLabel(r.at))} ${esc(r.at.toTimeString().slice(0, 5))}</td>
+        <td class="n">${esc(fmtAge(r.ageH))}</td>
+        <td>${chip}</td>
+      </tr>`;
+    }).join("") || `<tr><td colspan="7" class="muted">No hung workflows in this selection.</td></tr>`}
+  </tbody></table>`;
+}
+function exportCSV(){
+  const h = hungRows(filtered());
+  const head = ["instance_id", "template", "stuck_task", "owning_group",
+                "stuck_since", "age_hours"];
+  const body = h.map(r => [r.id, r.tpl, r.task, r.group,
+    r.at.toISOString(), Math.round(r.ageH)]);
+  const csv = [head, ...body]
+    .map(row => row.map(v => /[",\n]/.test(String(v)) ?
+      `"${String(v).replace(/"/g, '""')}"` : v).join(",")).join("\r\n");
+  const url = URL.createObjectURL(new Blob([csv], {type:"text/csv;charset=utf-8"}));
+  const a = document.createElement("a");
+  a.href = url; a.download = `hung_workflows_${S.win}.csv`; a.click();
+  URL.revokeObjectURL(url);
+}
+
+/* ═══════════════════════════════════════════════════════════════════════
+   Orchestration
+   ═══════════════════════════════════════════════════════════════════════ */
+function renderAll(){
+  const rows = filtered();
+  el("fcount").textContent =
+    `${n0(rows.length)} instance${rows.length === 1 ? "" : "s"} · ${WINDOWS[S.win].label}`;
+  renderStrip(rows);
+  renderTrend(rows);
+  renderRate(rows);
+  renderAge(rows);
+  renderRanked("c-task", rows, r => r.task, "hung instances");
+  renderRanked("c-wf",   rows, r => r.tpl,  "hung instances");
+  renderHeat(rows);
+  renderSmall(rows);
+  renderTable(rows);
+}
+
+function init(){
+  el("asof").textContent = "as of " + AS_OF.toLocaleString("en-GB",
+    {day:"2-digit", month:"short", year:"numeric", hour:"2-digit", minute:"2-digit"});
+  el("srcnote").textContent =
+    `Sample dataset generated in-page (${n0(RAW.length)} workflow instances, ` +
+    `1 Oct – 15 Nov 2024) so this page opens standalone. Swap build() for a fetch ` +
+    `returning the same record shape to point it at live EPM data.`;
+
+  TEMPLATES.forEach(t => el("fwf").add(new Option(t, t)));
+  TASKS.forEach(t => el("ftask").add(new Option(t, t)));
+
+  el("win").addEventListener("click", e => {
+    const b = e.target.closest("[data-win]");
+    if(!b) return;
+    S.win = b.dataset.win;
+    [...el("win").children].forEach(x =>
+      x.setAttribute("aria-pressed", String(x === b)));
+    renderAll();
+  });
+  el("fwf").addEventListener("change", e => { S.tpl = e.target.value; renderAll(); });
+  el("ftask").addEventListener("change", e => { S.task = e.target.value; renderAll(); });
+  let t;
+  el("fq").addEventListener("input", e => {
+    clearTimeout(t);
+    t = setTimeout(() => { S.q = e.target.value; renderAll(); }, 180);
+  });
+  el("reset").addEventListener("click", () => {
+    S.win = "all"; S.tpl = ""; S.task = ""; S.q = "";
+    el("fwf").value = ""; el("ftask").value = ""; el("fq").value = "";
+    [...el("win").children].forEach(x =>
+      x.setAttribute("aria-pressed", String(x.dataset.win === "all")));
+    renderAll();
+  });
+  el("csv").addEventListener("click", exportCSV);
+
+  renderAll();
+}
+init();
+</script>
+</body>
+</html>
